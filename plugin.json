@@ -1,0 +1,79 @@
+{
+  "name": "file_sync_plugin",
+  "version": "1.0.0",
+  "description": "QQ群文件自动同步NextCloud",
+  "author": "Developer",
+  "entry": "file_sync_plugin.plugin:FileSyncPlugin",
+  "config": {
+    "nextcloud_url": {
+      "type": "str",
+      "description": "NextCloud WebDAV地址",
+      "required": true
+    },
+    "nextcloud_username": {
+      "type": "str",
+      "description": "NextCloud用户名",
+      "required": true
+    },
+    "nextcloud_password": {
+      "type": "str",
+      "description": "NextCloud应用密码",
+      "required": true
+    },
+    "enabled_groups": {
+      "type": "list",
+      "description": "启用的群号列表，如 [\"123456\", \"987654\"]",
+      "required": true
+    },
+    "base_path": {
+      "type": "str",
+      "description": "云盘基础路径，如 /QQ群文件",
+      "default": "/QQ群文件"
+    },
+    "path_template": {
+      "type": "str",
+      "description": "文件夹路径模板，支持 {group_name}, {group_id}, {file_type}",
+      "default": "{group_name}_{group_id}/{file_type}"
+    },
+    "sync_interval_minutes": {
+      "type": "int",
+      "description": "同步间隔(分钟)",
+      "default": 5
+    },
+    "file_type_whitelist": {
+      "type": "list",
+      "description": "允许的文件类型，如 [\".pdf\", \".docx\"]，留空或[\"*\"]表示所有类型",
+      "default": ["*"]
+    },
+    "notify_on_success": {
+      "type": "bool",
+      "description": "成功时通知管理员",
+      "default": false
+    },
+    "notify_on_error": {
+      "type": "bool",
+      "description": "失败时通知管理员",
+      "default": true
+    },
+    "retry_queue_enabled": {
+      "type": "bool",
+      "description": "启用失败重试队列",
+      "default": true
+    },
+    "retry_max_attempts": {
+      "type": "int",
+      "description": "最大重试次数",
+      "default": 3
+    },
+    "retry_delay_seconds": {
+      "type": "int",
+      "description": "重试间隔(秒)",
+      "default": 300
+    }
+  },
+  "dependencies": {
+    "nc_py_api": ">=2.0.0",
+    "APScheduler": ">=3.10.0",
+    "httpx": ">=0.24.0"
+  }
+}

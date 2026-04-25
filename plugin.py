@@ -1,0 +1,314 @@
+import asyncio
+import logging
+import tempfile
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+import httpx
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+
+from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.star import Context, Star, register
+from astrbot.api.platform import PlatformAdapterType
+
+from file_sync_plugin.config import FileSyncConfig, validate_config
+from file_sync_plugin.services.cloud_sync import CloudSyncService
+from file_sync_plugin.services.state_manager import StateManager
+from file_sync_plugin.models.sync_record import SyncRecord
+
+logger = logging.getLogger(__name__)
+
+@register
+class FileSyncPlugin(Star):
+    """QQ群文件自动同步NextCloud插件"""
+
+    def __init__(self, context: Context):
+        super().__init__(context)
+        self.context = context
+        self.name = "file_sync_plugin"
+        self.config: Optional[FileSyncConfig] = None
+        self.scheduler: Optional[AsyncIOScheduler] = None
+        self.state_manager: Optional[StateManager] = None
+        self.cloud_sync: Optional[CloudSyncService] = None
+
+    async def initialize(self):
+        """初始化插件"""
+        logger.info("初始化 FileSyncPlugin...")
+
+        # 加载配置
+        plugin_config = self.context.get_plugin_config(self.name)
+        if not plugin_config:
+            logger.error("插件配置为空，请检查配置")
+            return
+
+        self.config = validate_config(plugin_config)
+
+        # 初始化服务
+        self.state_manager = StateManager()
+        self.cloud_sync = CloudSyncService(self.config)
+
+        # 启动定时任务
+        self.scheduler = AsyncIOScheduler()
+        self.scheduler.add_job(
+            self.sync_all_groups,
+            trigger=IntervalTrigger(minutes=self.config.sync_interval_minutes),
+            id="sync_files",
+            name="定时同步群文件"
+        )
+        self.scheduler.start()
+        logger.info(f"定时同步任务已启动，间隔: {self.config.sync_interval_minutes}分钟")
+
+    async def terminate(self):
+        """插件卸载时调用"""
+        if self.scheduler:
+            self.scheduler.shutdown()
+        if self.state_manager:
+            self.state_manager.close()
+
+    @staticmethod
+    def _write_file(file_path: Path, content: bytes) -> None:
+        """同步写入文件（用于 asyncio.to_thread 包装）"""
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+    @filter.command("同步文件")
+    async def sync_files_command(self, event: AstrMessageEvent):
+        """手动触发一次同步"""
+        yield event.plain_result("开始同步...")
+        await self.sync_all_groups()
+        yield event.plain_result("同步完成")
+
+    @filter.command("同步状态")
+    async def sync_status_command(self, event: AstrMessageEvent):
+        """查看同步状态"""
+        if not self.state_manager:
+            yield event.plain_result("状态管理器未初始化")
+            return
+        stats = self.state_manager.get_sync_stats()
+        yield event.plain_result(
+            f"已同步文件: {stats['total_synced']}\n"
+            f"待重试: {stats['pending_retries']}"
+        )
+
+    @filter.command("同步统计")
+    async def sync_stats_command(self, event: AstrMessageEvent):
+        """查看同步统计"""
+        if not self.state_manager:
+            yield event.plain_result("状态管理器未初始化")
+            return
+        stats = self.state_manager.get_sync_stats()
+        pending = self.state_manager.get_pending_retries()
+        msg = f"已同步文件: {stats['total_synced']}\n待重试任务: {stats['pending_retries']}"
+        if pending:
+            msg += "\n\n待重试文件:"
+            for p in pending[:5]:
+                msg += f"\n- {p['file_name']} (尝试 {p['attempts']} 次)"
+        yield event.plain_result(msg)
+
+    async def sync_all_groups(self):
+        """同步所有配置的群"""
+        logger.info("开始同步所有群...")
+
+        if not self.config:
+            logger.error("配置未初始化")
+            return
+
+        for group_id in self.config.enabled_groups:
+            try:
+                await self.sync_group(group_id)
+            except Exception as e:
+                logger.error(f"同步群 {group_id} 失败: {e}")
+
+        # 处理重试队列
+        await self.process_retry_queue()
+
+        logger.info("同步完成")
+
+    async def get_group_info(self, group_id: str) -> tuple:
+        """获取群信息，返回 (群名称, 群号)"""
+        platform = self.context.get_platform(PlatformAdapterType.AIOCQHTTP)
+        if not platform:
+            return (f"Group_{group_id}", group_id)
+
+        client = platform.get_client()
+        try:
+            # 调用获取群信息的API
+            result = await client.api.call_action(
+                "get_group_info",
+                group_id=int(group_id)
+            )
+            group_name = result.get("group_name", f"Group_{group_id}")
+            return (group_name, group_id)
+        except Exception as e:
+            logger.warning(f"获取群 {group_id} 信息失败: {e}")
+            return (f"Group_{group_id}", group_id)
+
+    async def sync_group(self, group_id: str):
+        """同步单个群的文件（仅同步时间段内新增的文件）"""
+        # 获取平台客户端
+        platform = self.context.get_platform(PlatformAdapterType.AIOCQHTTP)
+        if not platform:
+            logger.error("无法获取QQ平台")
+            return
+
+        client = platform.get_client()
+
+        # 获取群名称
+        group_name, group_id = await self.get_group_info(group_id)
+        logger.info(f"正在同步群: {group_name} ({group_id})")
+
+        # 获取上次同步时间
+        last_sync_time = self.state_manager.get_last_sync_time(group_id)
+        if last_sync_time:
+            logger.info(f"群 {group_id} 上次同步时间: {last_sync_time}")
+        else:
+            logger.info(f"群 {group_id} 首次同步，将同步所有文件")
+
+        # 获取群文件列表
+        try:
+            result = await client.api.call_action(
+                "get_group_file_list",
+                group_id=int(group_id)
+            )
+        except httpx.HTTPError as e:
+            logger.error(f"获取群 {group_id} 文件列表失败: {e}")
+            return
+
+        files = result.get("files", [])
+        logger.info(f"群 {group_id} 共有 {len(files)} 个文件")
+
+        # 记录本次同步时间
+        sync_time = datetime.now()
+        new_files_count = 0
+
+        for file_info in files:
+            file_id = file_info.get("fileid")
+            file_name = file_info.get("filename")
+            file_size = file_info.get("size", 0)
+            upload_time_ts = file_info.get("upload_time", 0)
+
+            # 将上传时间戳转换为datetime
+            upload_time = datetime.fromtimestamp(upload_time_ts) if upload_time_ts else None
+
+            # 检查文件类型
+            if not self.config.is_file_type_allowed(file_name):
+                logger.debug(f"跳过不允许的文件类型: {file_name}")
+                continue
+
+            # 时间段过滤：只同步上次同步时间之后的新文件
+            if last_sync_time and upload_time:
+                if upload_time <= last_sync_time:
+                    logger.debug(f"跳过旧文件: {file_name} (上传时间: {upload_time})")
+                    continue
+
+            # 根据模板生成目标路径
+            target_path = self.config.generate_target_path(group_name, group_id, file_name)
+
+            # 下载并上传
+            success = await self.sync_single_file(
+                group_id, target_path, file_id, file_name, file_size
+            )
+
+            if success:
+                new_files_count += 1
+                # 记录同步
+                record = SyncRecord(
+                    file_id=file_id,
+                    file_name=file_name,
+                    file_size=file_size,
+                    group_id=group_id,
+                    target_path=target_path,
+                    sync_time=datetime.now()
+                )
+                self.state_manager.add_sync_record(record)
+            else:
+                # 加入重试队列
+                if self.config.retry_queue_enabled:
+                    self.state_manager.add_to_retry_queue(
+                        file_id, file_name, file_size, group_id, target_path,
+                        self.config.retry_delay_seconds
+                    )
+
+        # 更新该群的上次同步时间
+        self.state_manager.update_last_sync_time(group_id, sync_time)
+        logger.info(f"群 {group_id} 同步完成，新增 {new_files_count} 个文件")
+
+    async def sync_single_file(self, group_id: str, target_path: str,
+                               file_id: str, file_name: str, file_size: int) -> bool:
+        """同步单个文件"""
+        temp_dir = None
+        try:
+            # 获取下载链接
+            platform = self.context.get_platform(PlatformAdapterType.AIOCQHTTP)
+            client = platform.get_client()
+            url_result = await client.api.call_action(
+                "get_group_file_url",
+                group_id=int(group_id),
+                file_id=file_id
+            )
+            file_url = url_result.get("url")
+            if not file_url:
+                logger.error(f"无法获取文件下载链接: {file_name}")
+                return False
+
+            # 下载到临时目录
+            temp_dir = Path(tempfile.gettempdir()) / "file_sync"
+            temp_dir.mkdir(exist_ok=True)
+            local_path = temp_dir / file_name
+
+            async with httpx.AsyncClient() as http_client:
+                response = await http_client.get(file_url)
+                response.raise_for_status()
+                # 使用 asyncio.to_thread 避免阻塞事件循环
+                await asyncio.to_thread(self._write_file, local_path, response.content)
+
+            # 上传到NextCloud
+            remote_path = f"{target_path}/{file_name}"
+            upload_success = await asyncio.to_thread(self.cloud_sync.upload_file, str(local_path), remote_path)
+
+            # 清理临时文件
+            local_path.unlink(missing_ok=True)
+
+            return upload_success
+
+        except httpx.HTTPError as e:
+            logger.error(f"下载文件失败 {file_name}: {e}")
+            return False
+        except IOError as e:
+            logger.error(f"文件IO操作失败 {file_name}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"同步文件失败 {file_name}: {e}")
+            return False
+
+    async def process_retry_queue(self):
+        """处理重试队列"""
+        if not self.state_manager:
+            return
+
+        pending = self.state_manager.get_pending_retries()
+        for item in pending:
+            if item["attempts"] >= self.config.retry_max_attempts:
+                logger.warning(f"文件 {item['file_name']} 重试次数超限，移出队列")
+                self.state_manager.remove_from_retry_queue(item["file_id"])
+                continue
+
+            success = await self.sync_single_file(
+                item["group_id"], item["target_path"],
+                item["file_id"], item["file_name"], item["file_size"]
+            )
+
+            if success:
+                self.state_manager.remove_from_retry_queue(item["file_id"])
+                record = SyncRecord(
+                    file_id=item["file_id"],
+                    file_name=item["file_name"],
+                    file_size=item["file_size"],
+                    group_id=item["group_id"],
+                    target_path=item["target_path"],
+                    sync_time=datetime.now()
+                )
+                self.state_manager.add_sync_record(record)
