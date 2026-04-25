@@ -1,2 +1,2 @@
-nc_py_api>=2.0.0
+nc-py-api>=2.0.0
 httpx>=0.24.0
