@@ -6,5 +6,4 @@ repo: https://github.com/your-repo/astrbot_plugin_document_sync
 main_file: plugin.py
 requirements:
   - nc_py_api
-  - APScheduler
   - httpx

@@ -7,9 +7,6 @@ from typing import Optional
 
 import httpx
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api.platform import PlatformAdapterType
@@ -30,9 +27,10 @@ class FileSyncPlugin(Star):
         self.context = context
         self.name = "file_sync_plugin"
         self.config: Optional[FileSyncConfig] = None
-        self.scheduler: Optional[AsyncIOScheduler] = None
         self.state_manager: Optional[StateManager] = None
         self.cloud_sync: Optional[CloudSyncService] = None
+        self._sync_task: Optional[asyncio.Task] = None
+        self._running = False
 
     async def initialize(self):
         """初始化插件"""
@@ -51,22 +49,32 @@ class FileSyncPlugin(Star):
         self.cloud_sync = CloudSyncService(self.config)
 
         # 启动定时任务
-        self.scheduler = AsyncIOScheduler()
-        self.scheduler.add_job(
-            self.sync_all_groups,
-            trigger=IntervalTrigger(minutes=self.config.sync_interval_minutes),
-            id="sync_files",
-            name="定时同步群文件"
-        )
-        self.scheduler.start()
+        self._running = True
+        self._sync_task = asyncio.create_task(self._sync_loop())
         logger.info(f"定时同步任务已启动，间隔: {self.config.sync_interval_minutes}分钟")
 
     async def terminate(self):
         """插件卸载时调用"""
-        if self.scheduler:
-            self.scheduler.shutdown()
+        self._running = False
+        if self._sync_task:
+            self._sync_task.cancel()
+            try:
+                await self._sync_task
+            except asyncio.CancelledError:
+                pass
         if self.state_manager:
             self.state_manager.close()
+
+    async def _sync_loop(self):
+        """定时同步循环"""
+        while self._running:
+            try:
+                await self.sync_all_groups()
+            except Exception as e:
+                logger.error(f"定时同步任务执行失败: {e}")
+
+            # 等待下次执行
+            await asyncio.sleep(self.config.sync_interval_minutes * 60)
 
     @staticmethod
     def _write_file(file_path: Path, content: bytes) -> None:

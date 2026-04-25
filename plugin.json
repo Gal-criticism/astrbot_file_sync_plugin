@@ -73,7 +73,6 @@
   },
   "dependencies": {
     "nc_py_api": ">=2.0.0",
-    "APScheduler": ">=3.10.0",
     "httpx": ">=0.24.0"
   }
 }
