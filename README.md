@@ -30,7 +30,7 @@ QQ群文件自动同步到NextCloud私有云盘的AstrBot插件。
 | `enabled_groups` | 启用的群号列表，如 `["123456", "987654"]` | - |
 | `base_path` | 云盘基础路径 | `/QQ群文件` |
 | `path_template` | 文件夹路径模板 | `{group_name}_{group_id}/{file_type}` |
-| `sync_interval_minutes` | 同步间隔（分钟） | `5` |
+| `sync_interval_minutes` | 同步间隔（分钟） | `1440` |
 | `file_type_whitelist` | 允许的文件类型，如 `[".pdf", ".docx"]` | `["*"]` |
 | `retry_queue_enabled` | 启用失败重试队列 | `true` |
 | `retry_max_attempts` | 最大重试次数 | `3` |

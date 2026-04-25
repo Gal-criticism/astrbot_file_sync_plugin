@@ -38,7 +38,7 @@
     "sync_interval_minutes": {
       "type": "int",
       "description": "同步间隔(分钟)",
-      "default": 5
+      "default": 1440
     },
     "file_type_whitelist": {
       "type": "list",

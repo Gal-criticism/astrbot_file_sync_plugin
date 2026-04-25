@@ -28,11 +28,25 @@ class CloudSyncService:
             self.nc = None
 
     def ensure_directory_exists(self, path: str) -> bool:
-        """确保目录存在，不存在则创建"""
+        """确保目录存在，不存在则创建（支持多层嵌套目录）"""
+        if not path:
+            return True
+
+        # 规范化路径，确保以 / 开头
+        path = path.strip("/")
+        if not path:
+            return True
+
         try:
-            if not self.nc.files.exists(path):
-                self.nc.files.mkdir(path)
-                logger.info(f"创建目录: {path}")
+            # 逐层检查并创建目录
+            current_path = ""
+            for segment in path.split("/"):
+                if not segment:
+                    continue
+                current_path += "/" + segment
+                if not self.nc.files.exists(current_path):
+                    self.nc.files.mkdir(current_path)
+                    logger.info(f"创建目录: {current_path}")
             return True
         except Exception as e:
             logger.error(f"创建目录失败 {path}: {e}")
