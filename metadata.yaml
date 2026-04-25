@@ -1,0 +1,10 @@
+name: file_sync_plugin
+desc: QQ群文件自动同步NextCloud
+version: 1.0.0
+author: Developer
+repo: https://github.com/your-repo/astrbot_plugin_document_sync
+main_file: plugin.py
+requirements:
+  - nc_py_api>=2.0.0
+  - APScheduler>=3.10.0
+  - httpx>=0.24.0
