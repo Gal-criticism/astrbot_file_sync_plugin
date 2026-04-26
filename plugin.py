@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class FileSyncPlugin(Star):
     """QQ群文件自动同步NextCloud插件"""
 
-    def __init__(self, context: Context, config: AstrBotConfig = None):
+    def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.context = context
         self.cfg = config
