@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
 
-from file_sync_plugin.models.sync_record import SyncRecord
+from ..models.sync_record import SyncRecord
 
 class StateManager:
     """同步状态管理器，使用SQLite存储"""

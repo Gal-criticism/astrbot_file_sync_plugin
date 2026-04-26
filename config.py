@@ -24,7 +24,7 @@ class FileSyncConfig(BaseModel):
         ext = self.get_file_type(filename)
         if not ext:
             return False
-        return ext.lower() in [x.lower() for x in self.file_type_whitelist]
+        return ext.lower() in [x.lstrip(".").lower() for x in self.file_type_whitelist]
 
     @staticmethod
     def get_file_type(filename: str) -> str:

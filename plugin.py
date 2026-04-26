@@ -7,25 +7,27 @@ from typing import Optional
 
 import httpx
 
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
-from astrbot.api.platform import PlatformAdapterType
 
-from file_sync_plugin.config import FileSyncConfig, validate_config
-from file_sync_plugin.services.cloud_sync import CloudSyncService
-from file_sync_plugin.services.state_manager import StateManager
-from file_sync_plugin.models.sync_record import SyncRecord
+from .config import FileSyncConfig, validate_config
+from .services.cloud_sync import CloudSyncService
+from .services.state_manager import StateManager
+from .models.sync_record import SyncRecord
 
 logger = logging.getLogger(__name__)
 
-@register
+
+@register("file_sync_plugin2", "Developer", "QQ群文件自动同步NextCloud", "1.0.0", "")
 class FileSyncPlugin(Star):
     """QQ群文件自动同步NextCloud插件"""
 
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
         self.context = context
-        self.name = "file_sync_plugin"
+        self.cfg = config
+        self.name = "file_sync_plugin2"
         self.config: Optional[FileSyncConfig] = None
         self.state_manager: Optional[StateManager] = None
         self.cloud_sync: Optional[CloudSyncService] = None
@@ -36,19 +38,20 @@ class FileSyncPlugin(Star):
         """初始化插件"""
         logger.info("初始化 FileSyncPlugin...")
 
-        # 加载配置
-        plugin_config = self.context.get_plugin_config(self.name)
+        if self.cfg is None:
+            logger.error("插件配置未初始化")
+            return
+
+        plugin_config = dict(self.cfg)
         if not plugin_config:
             logger.error("插件配置为空，请检查配置")
             return
 
         self.config = validate_config(plugin_config)
 
-        # 初始化服务
         self.state_manager = StateManager()
         self.cloud_sync = CloudSyncService(self.config)
 
-        # 启动定时任务
         self._running = True
         self._sync_task = asyncio.create_task(self._sync_loop())
         logger.info(f"定时同步任务已启动，间隔: {self.config.sync_interval_minutes}分钟")
@@ -73,7 +76,6 @@ class FileSyncPlugin(Star):
             except Exception as e:
                 logger.error(f"定时同步任务执行失败: {e}")
 
-            # 等待下次执行
             await asyncio.sleep(self.config.sync_interval_minutes * 60)
 
     @staticmethod
@@ -130,20 +132,17 @@ class FileSyncPlugin(Star):
             except Exception as e:
                 logger.error(f"同步群 {group_id} 失败: {e}")
 
-        # 处理重试队列
         await self.process_retry_queue()
-
         logger.info("同步完成")
 
     async def get_group_info(self, group_id: str) -> tuple:
         """获取群信息，返回 (群名称, 群号)"""
-        platform = self.context.get_platform(PlatformAdapterType.AIOCQHTTP)
+        platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
         if not platform:
             return (f"Group_{group_id}", group_id)
 
         client = platform.get_client()
         try:
-            # 调用获取群信息的API
             result = await client.api.call_action(
                 "get_group_info",
                 group_id=int(group_id)
@@ -155,27 +154,23 @@ class FileSyncPlugin(Star):
             return (f"Group_{group_id}", group_id)
 
     async def sync_group(self, group_id: str):
-        """同步单个群的文件（仅同步时间段内新增的文件）"""
-        # 获取平台客户端
-        platform = self.context.get_platform(PlatformAdapterType.AIOCQHTTP)
+        """同步单个群的文件"""
+        platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
         if not platform:
             logger.error("无法获取QQ平台")
             return
 
         client = platform.get_client()
 
-        # 获取群名称
         group_name, group_id = await self.get_group_info(group_id)
         logger.info(f"正在同步群: {group_name} ({group_id})")
 
-        # 获取上次同步时间
         last_sync_time = self.state_manager.get_last_sync_time(group_id)
         if last_sync_time:
             logger.info(f"群 {group_id} 上次同步时间: {last_sync_time}")
         else:
             logger.info(f"群 {group_id} 首次同步，将同步所有文件")
 
-        # 获取群文件列表
         try:
             result = await client.api.call_action(
                 "get_group_file_list",
@@ -188,7 +183,6 @@ class FileSyncPlugin(Star):
         files = result.get("files", [])
         logger.info(f"群 {group_id} 共有 {len(files)} 个文件")
 
-        # 记录本次同步时间
         sync_time = datetime.now()
         new_files_count = 0
 
@@ -198,31 +192,25 @@ class FileSyncPlugin(Star):
             file_size = file_info.get("size", 0)
             upload_time_ts = file_info.get("upload_time", 0)
 
-            # 将上传时间戳转换为datetime
             upload_time = datetime.fromtimestamp(upload_time_ts) if upload_time_ts else None
 
-            # 检查文件类型
             if not self.config.is_file_type_allowed(file_name):
                 logger.debug(f"跳过不允许的文件类型: {file_name}")
                 continue
 
-            # 时间段过滤：只同步上次同步时间之后的新文件
             if last_sync_time and upload_time:
                 if upload_time <= last_sync_time:
                     logger.debug(f"跳过旧文件: {file_name} (上传时间: {upload_time})")
                     continue
 
-            # 根据模板生成目标路径
             target_path = self.config.generate_target_path(group_name, group_id, file_name)
 
-            # 下载并上传
             success = await self.sync_single_file(
                 group_id, target_path, file_id, file_name, file_size
             )
 
             if success:
                 new_files_count += 1
-                # 记录同步
                 record = SyncRecord(
                     file_id=file_id,
                     file_name=file_name,
@@ -233,24 +221,20 @@ class FileSyncPlugin(Star):
                 )
                 self.state_manager.add_sync_record(record)
             else:
-                # 加入重试队列
                 if self.config.retry_queue_enabled:
                     self.state_manager.add_to_retry_queue(
                         file_id, file_name, file_size, group_id, target_path,
                         self.config.retry_delay_seconds
                     )
 
-        # 更新该群的上次同步时间
         self.state_manager.update_last_sync_time(group_id, sync_time)
         logger.info(f"群 {group_id} 同步完成，新增 {new_files_count} 个文件")
 
     async def sync_single_file(self, group_id: str, target_path: str,
                                file_id: str, file_name: str, file_size: int) -> bool:
         """同步单个文件"""
-        temp_dir = None
         try:
-            # 获取下载链接
-            platform = self.context.get_platform(PlatformAdapterType.AIOCQHTTP)
+            platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
             client = platform.get_client()
             url_result = await client.api.call_action(
                 "get_group_file_url",
@@ -262,7 +246,6 @@ class FileSyncPlugin(Star):
                 logger.error(f"无法获取文件下载链接: {file_name}")
                 return False
 
-            # 下载到临时目录
             temp_dir = Path(tempfile.gettempdir()) / "file_sync"
             temp_dir.mkdir(exist_ok=True)
             local_path = temp_dir / file_name
@@ -270,14 +253,11 @@ class FileSyncPlugin(Star):
             async with httpx.AsyncClient() as http_client:
                 response = await http_client.get(file_url)
                 response.raise_for_status()
-                # 使用 asyncio.to_thread 避免阻塞事件循环
                 await asyncio.to_thread(self._write_file, local_path, response.content)
 
-            # 上传到NextCloud
             remote_path = f"{target_path}/{file_name}"
             upload_success = await asyncio.to_thread(self.cloud_sync.upload_file, str(local_path), remote_path)
 
-            # 清理临时文件
             local_path.unlink(missing_ok=True)
 
             return upload_success

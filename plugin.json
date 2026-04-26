@@ -1,9 +1,9 @@
 {
-  "name": "file_sync_plugin",
+  "name": "file_sync_plugin2",
   "version": "1.0.0",
   "description": "QQ群文件自动同步NextCloud",
   "author": "Developer",
-  "entry": "file_sync_plugin.plugin:FileSyncPlugin",
+  "entry": "file_sync_plugin2:FileSyncPlugin",
   "config": {
     "nextcloud_url": {
       "type": "str",

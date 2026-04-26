@@ -1,0 +1,80 @@
+{
+    "nextcloud_url": {
+        "description": "NextCloud WebDAV地址",
+        "type": "string",
+        "hint": "NextCloud的WebDAV地址，如 https://your-nextcloud.com/remote.php/dav/files/username",
+        "obvious_hint": true
+    },
+    "nextcloud_username": {
+        "description": "NextCloud用户名",
+        "type": "string",
+        "hint": "用于登录NextCloud的用户名",
+        "obvious_hint": true
+    },
+    "nextcloud_password": {
+        "description": "NextCloud应用密码",
+        "type": "string",
+        "hint": "NextCloud应用密码（非登录密码），在NextCloud安全设置中生成",
+        "obvious_hint": true
+    },
+    "enabled_groups": {
+        "description": "启用的群号列表",
+        "type": "list",
+        "hint": "需要同步文件的QQ群号列表，格式：[\"123456\", \"789012\"]",
+        "obvious_hint": true
+    },
+    "base_path": {
+        "description": "云盘基础路径",
+        "type": "string",
+        "hint": "文件同步到NextCloud的基础路径，如 /QQ群文件",
+        "default": "/QQ群文件"
+    },
+    "path_template": {
+        "description": "文件夹路径模板",
+        "type": "string",
+        "hint": "支持 {group_name}(群名称) {group_id}(群号) {file_type}(文件类型)，如 {group_name}_{group_id}/{file_type}",
+        "default": "{group_name}_{group_id}/{file_type}"
+    },
+    "sync_interval_minutes": {
+        "description": "同步间隔(分钟)",
+        "type": "int",
+        "hint": "定时同步的间隔时间，单位分钟",
+        "default": 1440
+    },
+    "file_type_whitelist": {
+        "description": "允许的文件类型",
+        "type": "list",
+        "hint": "允许同步的文件扩展名，如 [\".pdf\", \".docx\"]，留空或 [\"*\"] 表示所有类型",
+        "default": ["*"]
+    },
+    "notify_on_success": {
+        "description": "成功时通知",
+        "type": "bool",
+        "hint": "同步成功时是否通知管理员",
+        "default": false
+    },
+    "notify_on_error": {
+        "description": "失败时通知",
+        "type": "bool",
+        "hint": "同步失败时是否通知管理员",
+        "default": true
+    },
+    "retry_queue_enabled": {
+        "description": "启用失败重试",
+        "type": "bool",
+        "hint": "同步失败时是否加入重试队列",
+        "default": true
+    },
+    "retry_max_attempts": {
+        "description": "最大重试次数",
+        "type": "int",
+        "hint": "失败重试的最大尝试次数",
+        "default": 3
+    },
+    "retry_delay_seconds": {
+        "description": "重试间隔(秒)",
+        "type": "int",
+        "hint": "两次重试之间的等待时间（秒）",
+        "default": 300
+    }
+}

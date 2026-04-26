@@ -2,8 +2,8 @@ from nc_py_api import Nextcloud
 from typing import Optional
 import logging
 
-from file_sync_plugin.config import FileSyncConfig
-from file_sync_plugin.utils.rename import generate_unique_filename
+from ..config import FileSyncConfig
+from ..utils.rename import generate_unique_filename
 
 logger = logging.getLogger(__name__)
 
