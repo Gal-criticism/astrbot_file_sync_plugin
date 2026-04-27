@@ -19,7 +19,7 @@ from .models.sync_record import SyncRecord
 logger = logging.getLogger(__name__)
 
 
-@register("file_sync_plugin2", "Developer", "QQ群文件自动同步NextCloud", "1.0.0", "")
+@register("file_sync_plugin3", "Developer", "QQ群文件自动同步NextCloud", "1.0.0")
 class FileSyncPlugin(Star):
     """QQ群文件自动同步NextCloud插件"""
 
@@ -27,7 +27,7 @@ class FileSyncPlugin(Star):
         super().__init__(context)
         self.context = context
         self.cfg = config
-        self.name = "file_sync_plugin2"
+        self.name = "file_sync_plugin3"
         self.config: Optional[FileSyncConfig] = None
         self.state_manager: Optional[StateManager] = None
         self.cloud_sync: Optional[CloudSyncService] = None

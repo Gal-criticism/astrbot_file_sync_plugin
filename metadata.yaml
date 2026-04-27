@@ -1,4 +1,4 @@
-name: file_sync_plugin2
+name: file_sync_plugin3
 desc: QQ群文件自动同步NextCloud
 help: 使用 /同步文件 手动触发同步，/同步状态 查看状态，/同步统计 查看统计
 version: 1.0.0
