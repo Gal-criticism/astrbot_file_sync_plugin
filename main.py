@@ -74,7 +74,22 @@ class FileSyncPlugin(Star):
             # 处理 AstrBot 可能以 JSON 字符串传入的列表字段
             plugin_config["enabled_groups"] = _ensure_list(plugin_config.get("enabled_groups", []))
             plugin_config["file_type_whitelist"] = _ensure_list(plugin_config.get("file_type_whitelist", ["*"]))
-            logger.info(f"✓ 列表字段解析后: enabled_groups={plugin_config['enabled_groups']}, file_type_whitelist={plugin_config['file_type_whitelist']}")
+
+            # 处理数值字段：AstrBot 可能传入 0，需要替换为默认值
+            if not plugin_config.get("sync_interval_minutes") or plugin_config["sync_interval_minutes"] < 1:
+                plugin_config["sync_interval_minutes"] = 1440
+            if not plugin_config.get("retry_max_attempts") or plugin_config["retry_max_attempts"] < 1:
+                plugin_config["retry_max_attempts"] = 3
+            if not plugin_config.get("retry_delay_seconds") or plugin_config["retry_delay_seconds"] < 60:
+                plugin_config["retry_delay_seconds"] = 300
+
+            # 处理必填字符串字段：AstrBot 可能传入空字符串
+            for key in ("nextcloud_url", "nextcloud_username", "nextcloud_password"):
+                val = plugin_config.get(key, "")
+                if not val or not str(val).strip():
+                    logger.warning(f"⚠️ 配置项 {key} 为空，部分功能可能不可用")
+
+            logger.info(f"✓ 字段预处理完成: enabled_groups={plugin_config['enabled_groups']}, sync_interval={plugin_config['sync_interval_minutes']}分钟")
 
             logger.info("✓ 开始验证配置...")
             self.config = validate_config(plugin_config)
