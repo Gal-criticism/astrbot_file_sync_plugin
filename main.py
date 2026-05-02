@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -7,7 +6,7 @@ from typing import Optional
 
 import httpx
 
-from astrbot.api import AstrBotConfig
+from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 
@@ -15,8 +14,6 @@ from .config import FileSyncConfig, validate_config
 from .services.cloud_sync import CloudSyncService
 from .services.state_manager import StateManager
 from .models.sync_record import SyncRecord
-
-logger = logging.getLogger(__name__)
 
 
 @register("file_sync_plugin3", "Developer", "QQ群文件自动同步NextCloud", "1.0.0")
@@ -34,27 +31,35 @@ class FileSyncPlugin(Star):
         self._sync_task: Optional[asyncio.Task] = None
         self._running = False
 
+        logger.info("========== FileSyncPlugin __init__ 开始 ==========")
+
+        try:
+            if self.cfg is None:
+                logger.error("插件配置未初始化，self.cfg 为 None")
+                return
+
+            plugin_config = dict(self.cfg)
+            if not plugin_config:
+                logger.error("插件配置为空，请检查配置")
+                return
+
+            self.config = validate_config(plugin_config)
+            logger.info(f"配置验证成功，enabled_groups: {self.config.enabled_groups}")
+
+            self.state_manager = StateManager()
+            self.cloud_sync = CloudSyncService(self.config)
+
+            self._running = True
+            self._sync_task = asyncio.create_task(self._sync_loop())
+            logger.info(f"定时同步任务已启动，间隔: {self.config.sync_interval_minutes}分钟")
+        except Exception as e:
+            logger.error(f"初始化插件时发生异常: {e}", exc_info=True)
+
+        logger.info("========== FileSyncPlugin __init__ 结束 ==========")
+
     async def initialize(self):
-        """初始化插件"""
-        logger.info("初始化 FileSyncPlugin...")
-
-        if self.cfg is None:
-            logger.error("插件配置未初始化")
-            return
-
-        plugin_config = dict(self.cfg)
-        if not plugin_config:
-            logger.error("插件配置为空，请检查配置")
-            return
-
-        self.config = validate_config(plugin_config)
-
-        self.state_manager = StateManager()
-        self.cloud_sync = CloudSyncService(self.config)
-
-        self._running = True
-        self._sync_task = asyncio.create_task(self._sync_loop())
-        logger.info(f"定时同步任务已启动，间隔: {self.config.sync_interval_minutes}分钟")
+        """可选的异步初始化方法"""
+        logger.info("initialize() 被调用")
 
     async def terminate(self):
         """插件卸载时调用"""
@@ -123,7 +128,7 @@ class FileSyncPlugin(Star):
         logger.info("开始同步所有群...")
 
         if not self.config:
-            logger.error("配置未初始化")
+            logger.error("配置未初始化，跳过同步")
             return
 
         for group_id in self.config.enabled_groups:
