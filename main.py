@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,25 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 
 from .config import FileSyncConfig, validate_config
+
+
+def _ensure_list(value) -> list:
+    """确保值为列表类型，处理 JSON 字符串格式的列表"""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # 逗号分隔的字符串也支持
+        if value.strip():
+            return [v.strip() for v in value.split(",")]
+    return []
+
+
 from .services.cloud_sync import CloudSyncService
 from .services.state_manager import StateManager
 from .models.sync_record import SyncRecord
@@ -50,6 +70,11 @@ class FileSyncPlugin(Star):
             if not plugin_config:
                 logger.error("❌ 插件配置为空，请检查配置")
                 return
+
+            # 处理 AstrBot 可能以 JSON 字符串传入的列表字段
+            plugin_config["enabled_groups"] = _ensure_list(plugin_config.get("enabled_groups", []))
+            plugin_config["file_type_whitelist"] = _ensure_list(plugin_config.get("file_type_whitelist", ["*"]))
+            logger.info(f"✓ 列表字段解析后: enabled_groups={plugin_config['enabled_groups']}, file_type_whitelist={plugin_config['file_type_whitelist']}")
 
             logger.info("✓ 开始验证配置...")
             self.config = validate_config(plugin_config)

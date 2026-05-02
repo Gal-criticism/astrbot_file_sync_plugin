@@ -2,7 +2,7 @@ name: file_sync_plugin3
 desc: QQ群文件自动同步NextCloud
 help: 使用 /同步文件 手动触发同步，/同步状态 查看状态，/同步统计 查看统计
 version: 1.0.0
-author: Developer
+author: betterway
 repo: https://github.com/your-repo/astrbot_plugin_document_sync
 astrbot_version: ">=4.5.2"
 requirements:
