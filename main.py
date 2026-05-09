@@ -263,6 +263,48 @@ class FileSyncPlugin(Star):
                 msg += f"\n- {p['file_name']} (尝试 {p['attempts']} 次)"
         yield event.plain_result(msg)
 
+    @filter.command("同步调试")
+    async def sync_debug_command(self, event: AstrMessageEvent):
+        """调试命令：检查后端支持的 API"""
+        logger.info("收到调试命令")
+        platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
+        if not platform:
+            yield event.plain_result("无法获取QQ平台")
+            return
+
+        client = platform.get_client()
+        msg = "=== 后端 API 调试信息 ===\n"
+
+        # 1. 检查支持的 API 列表
+        try:
+            result = await client.api.call_action("get_supported_actions")
+            actions = result if isinstance(result, list) else []
+            file_apis = [a for a in actions if "file" in a.lower()]
+            msg += f"支持的文件相关 API: {file_apis if file_apis else '无'}\n"
+            msg += f"总支持 API 数量: {len(actions)}\n"
+        except Exception as e:
+            msg += f"获取支持的 API 失败: {e}\n"
+
+        # 2. 测试各个文件 API
+        test_apis = [
+            "get_group_root_files",
+            "get_group_file_list",
+            "get_group_files",
+        ]
+        for api_name in test_apis:
+            try:
+                result = await client.api.call_action(
+                    api_name,
+                    group_id=int(self.config.enabled_groups[0]) if self.config.enabled_groups else 0
+                )
+                msg += f"{api_name}: 可用 (返回类型: {type(result).__name__})\n"
+            except Exception as e:
+                error_msg = str(e)[:80]
+                msg += f"{api_name}: 不可用 ({error_msg})\n"
+
+        logger.info(f"调试信息: {msg}")
+        yield event.plain_result(msg)
+
     async def sync_all_groups(self) -> int:
         """同步所有配置的群，返回同步的群数量"""
         logger.info("开始同步所有群...")
@@ -308,6 +350,50 @@ class FileSyncPlugin(Star):
             logger.warning(f"获取群 {group_id} 信息失败: {e}，使用默认群名")
             return (f"Group_{group_id}", group_id)
 
+    async def _get_group_files(self, client, group_id: str) -> list:
+        """获取群文件列表，尝试多种 API 端点以兼容不同后端"""
+        # 尝试的 API 端点列表（按优先级排序）
+        api_endpoints = [
+            "get_group_root_files",      # 标准 OneBot 11 端点
+            "get_group_file_list",        # go-cqhttp 扩展端点
+            "get_group_files",            # 部分后端使用
+        ]
+
+        for api_name in api_endpoints:
+            try:
+                logger.debug(f"尝试 API: {api_name}, group_id={group_id}")
+                result = await client.api.call_action(
+                    api_name,
+                    group_id=int(group_id)
+                )
+                logger.info(f"API {api_name} 调用成功")
+
+                # 标准响应格式: {"files": [...], "folders": [...]}
+                if isinstance(result, dict):
+                    files = result.get("files", [])
+                    folders = result.get("folders", [])
+                    if files or folders:
+                        logger.info(f"获取到 {len(files)} 个文件, {len(folders)} 个文件夹")
+                        return files
+
+                # 某些后端直接返回列表
+                if isinstance(result, list):
+                    logger.info(f"获取到 {len(result)} 个项目")
+                    return result
+
+                logger.warning(f"API {api_name} 返回格式异常: {type(result)}")
+            except Exception as e:
+                error_msg = str(e)
+                if "1404" in error_msg or "不支持" in error_msg:
+                    logger.warning(f"API {api_name} 不被支持，尝试下一个")
+                    continue
+                else:
+                    logger.error(f"API {api_name} 调用失败: {e}")
+                    continue
+
+        logger.error(f"所有文件列表 API 均失败，当前后端可能不支持群文件操作")
+        return []
+
     async def sync_group(self, group_id: str):
         """同步单个群的文件"""
         logger.info(f"开始同步群 {group_id}")
@@ -327,30 +413,22 @@ class FileSyncPlugin(Star):
         else:
             logger.info(f"群 {group_id} 首次同步，将同步所有文件")
 
-        try:
-            logger.debug(f"正在获取群 {group_id} 的文件列表")
-            result = await client.api.call_action(
-                "get_group_file_list",
-                group_id=int(group_id)
-            )
-        except httpx.HTTPError as e:
-            logger.error(f"获取群 {group_id} 文件列表失败: {e}")
-            return
-        except Exception as e:
-            logger.error(f"获取群 {group_id} 文件列表时发生未知错误: {e}", exc_info=True)
+        files = await self._get_group_files(client, group_id)
+        if not files:
+            logger.warning(f"群 {group_id} 没有获取到文件或文件列表 API 不可用")
             return
 
-        files = result.get("files", [])
         logger.info(f"群 {group_id} 共有 {len(files)} 个文件")
 
         sync_time = datetime.now()
         new_files_count = 0
 
         for file_info in files:
-            file_id = file_info.get("fileid")
-            file_name = file_info.get("filename")
-            file_size = file_info.get("size", 0)
-            upload_time_ts = file_info.get("upload_time", 0)
+            # 兼容不同后端的字段命名格式
+            file_id = file_info.get("file_id") or file_info.get("fileid") or file_info.get("id", "")
+            file_name = file_info.get("file_name") or file_info.get("filename") or file_info.get("name", "")
+            file_size = file_info.get("file_size") or file_info.get("size", 0)
+            upload_time_ts = file_info.get("add_time") or file_info.get("upload_time") or file_info.get("create_time", 0)
 
             upload_time = datetime.fromtimestamp(upload_time_ts) if upload_time_ts else None
 
@@ -402,12 +480,23 @@ class FileSyncPlugin(Star):
 
             client = platform.get_client()
             logger.debug(f"正在获取文件 {file_name} 的下载链接")
-            url_result = await client.api.call_action(
-                "get_group_file_url",
-                group_id=int(group_id),
-                file_id=file_id
-            )
-            file_url = url_result.get("url")
+
+            # 尝试多种 API 获取下载链接
+            file_url = None
+            url_apis = ["get_group_file_url", "get_file_url"]
+            for api_name in url_apis:
+                try:
+                    url_result = await client.api.call_action(
+                        api_name,
+                        group_id=int(group_id),
+                        file_id=file_id
+                    )
+                    file_url = url_result.get("url")
+                    if file_url:
+                        break
+                except Exception as e:
+                    logger.warning(f"API {api_name} 失败: {e}")
+                    continue
             if not file_url:
                 logger.error(f"无法获取文件下载链接: {file_name}")
                 return False
