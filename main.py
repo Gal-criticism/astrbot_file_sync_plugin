@@ -16,19 +16,38 @@ from .config import FileSyncConfig, validate_config
 
 def _ensure_list(value) -> list:
     """确保值为列表类型，处理 JSON 字符串格式的列表"""
-    if isinstance(value, list):
-        return value
+    # 先处理外层类型
     if isinstance(value, str):
         try:
             parsed = json.loads(value)
             if isinstance(parsed, list):
-                return parsed
+                value = parsed
         except (json.JSONDecodeError, TypeError):
             pass
-        # 逗号分隔的字符串也支持
-        if value.strip():
-            return [v.strip() for v in value.split(",")]
-    return []
+        if isinstance(value, str) and value.strip():
+            value = [v.strip() for v in value.split(",")]
+
+    if not isinstance(value, list):
+        return []
+
+    # 再处理列表内每个元素（可能嵌套了字符串化的列表）
+    result = []
+    for item in value:
+        if isinstance(item, str):
+            try:
+                parsed = json.loads(item)
+                if isinstance(parsed, list):
+                    result.extend(parsed)
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                pass
+            if item.strip():
+                result.append(item.strip())
+        elif isinstance(item, list):
+            result.extend(_ensure_list(item))
+        else:
+            result.append(item)
+    return result
 
 
 from .services.cloud_sync import CloudSyncService
@@ -75,13 +94,20 @@ class FileSyncPlugin(Star):
             plugin_config["enabled_groups"] = _ensure_list(plugin_config.get("enabled_groups", []))
             plugin_config["file_type_whitelist"] = _ensure_list(plugin_config.get("file_type_whitelist", ["*"]))
 
-            # 处理数值字段：AstrBot 可能传入 0，需要替换为默认值
-            if not plugin_config.get("sync_interval_minutes") or plugin_config["sync_interval_minutes"] < 1:
-                plugin_config["sync_interval_minutes"] = 1440
-            if not plugin_config.get("retry_max_attempts") or plugin_config["retry_max_attempts"] < 1:
-                plugin_config["retry_max_attempts"] = 3
-            if not plugin_config.get("retry_delay_seconds") or plugin_config["retry_delay_seconds"] < 60:
-                plugin_config["retry_delay_seconds"] = 300
+            # 处理数值字段：AstrBot 可能传入字符串或 0，需要转换并替换为默认值
+            for key, default, min_val in [
+                ("sync_interval_minutes", 1440, 1),
+                ("retry_max_attempts", 3, 1),
+                ("retry_delay_seconds", 300, 60),
+            ]:
+                val = plugin_config.get(key, default)
+                try:
+                    val = int(val)
+                except (ValueError, TypeError):
+                    val = default
+                if val < min_val:
+                    val = default
+                plugin_config[key] = val
 
             # 处理必填字符串字段：AstrBot 可能传入空字符串
             for key in ("nextcloud_url", "nextcloud_username", "nextcloud_password"):
