@@ -2,6 +2,7 @@ import asyncio
 import json
 import tempfile
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +13,8 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 
 from .config import FileSyncConfig, validate_config
+
+CN_TZ = ZoneInfo("Asia/Shanghai")
 
 
 def _ensure_list(value) -> list:
@@ -420,7 +423,7 @@ class FileSyncPlugin(Star):
 
         logger.info(f"群 {group_id} 共有 {len(files)} 个文件")
 
-        sync_time = datetime.now()
+        sync_time = datetime.now(CN_TZ)
         new_files_count = 0
 
         for file_info in files:
@@ -430,7 +433,7 @@ class FileSyncPlugin(Star):
             file_size = file_info.get("file_size") or file_info.get("size", 0)
             upload_time_ts = file_info.get("add_time") or file_info.get("upload_time") or file_info.get("create_time", 0)
 
-            upload_time = datetime.fromtimestamp(upload_time_ts) if upload_time_ts else None
+            upload_time = datetime.fromtimestamp(upload_time_ts, tz=CN_TZ) if upload_time_ts else None
 
             if not self.config.is_file_type_allowed(file_name):
                 logger.debug(f"跳过不允许的文件类型: {file_name}")
@@ -440,6 +443,10 @@ class FileSyncPlugin(Star):
                 if upload_time <= last_sync_time:
                     logger.debug(f"跳过旧文件: {file_name} (上传时间: {upload_time})")
                     continue
+
+            if self.state_manager.is_synced(file_id):
+                logger.debug(f"跳过已同步文件: {file_name} (ID: {file_id})")
+                continue
 
             target_path = self.config.generate_target_path(group_name, group_id, file_name)
 
@@ -455,7 +462,7 @@ class FileSyncPlugin(Star):
                     file_size=file_size,
                     group_id=group_id,
                     target_path=target_path,
-                    sync_time=datetime.now()
+                    sync_time=datetime.now(CN_TZ)
                 )
                 self.state_manager.add_sync_record(record)
             else:
@@ -537,6 +544,29 @@ class FileSyncPlugin(Star):
             logger.error(f"同步文件失败 {file_name}: {e}", exc_info=True)
             return False
 
+    async def _notify_retry_failed(self, item: dict):
+        """通知用户文件重试同步失败"""
+        msg = (
+            f"[文件同步] 重试失败通知\n"
+            f"文件: {item['file_name']}\n"
+            f"群号: {item['group_id']}\n"
+            f"已尝试 {item['attempts']} 次，已达上限，不再重试"
+        )
+        logger.warning(msg)
+        try:
+            platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
+            if platform:
+                client = platform.get_client()
+                # 尝试发送到配置的第一个群
+                if self.config.enabled_groups:
+                    await client.api.call_action(
+                        "send_group_msg",
+                        group_id=int(self.config.enabled_groups[0]),
+                        message=msg
+                    )
+        except Exception as e:
+            logger.error(f"发送重试失败通知失败: {e}")
+
     async def process_retry_queue(self):
         """处理重试队列"""
         if not self.state_manager:
@@ -554,6 +584,7 @@ class FileSyncPlugin(Star):
             if item["attempts"] >= self.config.retry_max_attempts:
                 logger.warning(f"文件 {item['file_name']} 重试次数超限 ({item['attempts']}/{self.config.retry_max_attempts})，移出队列")
                 self.state_manager.remove_from_retry_queue(item["file_id"])
+                await self._notify_retry_failed(item)
                 continue
 
             success = await self.sync_single_file(
@@ -570,7 +601,7 @@ class FileSyncPlugin(Star):
                     file_size=item["file_size"],
                     group_id=item["group_id"],
                     target_path=item["target_path"],
-                    sync_time=datetime.now()
+                    sync_time=datetime.now(CN_TZ)
                 )
                 self.state_manager.add_sync_record(record)
             else:

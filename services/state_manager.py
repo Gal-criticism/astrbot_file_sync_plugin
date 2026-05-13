@@ -2,6 +2,9 @@ import sqlite3
 from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+CN_TZ = ZoneInfo("Asia/Shanghai")
 
 from ..models.sync_record import SyncRecord
 
@@ -87,7 +90,7 @@ class StateManager:
                           group_id: str, target_path: str, delay_seconds: int = 300):
         """加入重试队列"""
         from datetime import timedelta
-        next_retry = (datetime.now() + timedelta(seconds=delay_seconds)).isoformat()
+        next_retry = (datetime.now(CN_TZ) + timedelta(seconds=delay_seconds)).isoformat()
         conn = self._get_conn()
 
         # 先尝试UPDATE，累加attempts
@@ -103,12 +106,12 @@ class StateManager:
                 INSERT INTO retry_queue
                 (file_id, file_name, file_size, group_id, target_path, attempts, next_retry, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (file_id, file_name, file_size, group_id, target_path, 1, next_retry, datetime.now().isoformat()))
+            """, (file_id, file_name, file_size, group_id, target_path, 1, next_retry, datetime.now(CN_TZ).isoformat()))
         conn.commit()
 
     def get_pending_retries(self) -> List[dict]:
         """获取待处理的重试项"""
-        now = datetime.now().isoformat()
+        now = datetime.now(CN_TZ).isoformat()
         conn = self._get_conn()
         cursor = conn.execute(
             "SELECT file_id, file_name, file_size, group_id, target_path, attempts FROM retry_queue WHERE next_retry <= ?",
@@ -139,7 +142,10 @@ class StateManager:
         )
         row = cursor.fetchone()
         if row and row[0]:
-            return datetime.fromisoformat(row[0])
+            dt = datetime.fromisoformat(row[0])
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=CN_TZ)
+            return dt
         return None
 
     def update_last_sync_time(self, group_id: str, sync_time: datetime):
