@@ -11,12 +11,64 @@ QQ群文件自动同步到NextCloud私有云盘的AstrBot插件。
 - 文件重名自动重命名
 - 同步失败自动重试
 - 增量同步（只同步新增文件）
+- **双重去重策略**：时间戳快速跳过 + file_id 兜底检查
+- **统一北京时间**：所有时间操作使用东八区时区
+- **重试失败通知**：达到最大重试次数后通知用户
+
+## 核心逻辑
+
+```mermaid
+flowchart TD
+    A[定时同步触发] --> B[遍历配置的群列表]
+    B --> C[获取群文件列表]
+    C --> D{文件列表为空?}
+    D -->|是| E[跳过该群]
+    D -->|否| F[遍历文件列表]
+    
+    F --> G{文件类型允许?}
+    G -->|否| H[跳过文件]
+    G -->|是| I{时间戳检查}
+    
+    I -->|upload_time <= last_sync| J[跳过旧文件]
+    I -->|upload_time > last_sync| K{file_id 兜底检查}
+    
+    K -->|已同步| L[跳过重复文件]
+    K -->|未同步| M[生成目标路径]
+    
+    M --> N[下载文件]
+    N --> O{下载成功?}
+    O -->|否| P[加入重试队列]
+    O -->|是| Q[上传到NextCloud]
+    
+    Q --> R{上传成功?}
+    R -->|否| P
+    R -->|是| S[记录同步成功]
+    
+    S --> T[更新上次同步时间]
+    P --> U[处理重试队列]
+    
+    U --> V{重试次数超限?}
+    V -->|是| W[通知用户失败]
+    V -->|否| X[重新同步文件]
+```
+
+### 去重策略说明
+
+```mermaid
+flowchart LR
+    A[新文件] --> B{第一层: 时间戳快速跳过}
+    B -->|upload_time <= last_sync| C[跳过]
+    B -->|upload_time > last_sync| D{第二层: file_id兜底检查}
+    D -->|已同步| C
+    D -->|未同步| E[执行同步]
+```
 
 ## 命令
 
 - `/同步文件` - 手动触发同步（增量同步）
 - `/同步状态` - 查看同步状态
 - `/同步统计` - 查看同步统计
+- `/同步调试` - 检查后端支持的 API
 
 ## 配置
 
@@ -30,7 +82,7 @@ QQ群文件自动同步到NextCloud私有云盘的AstrBot插件。
 | `enabled_groups` | 启用的群号列表，如 `["123456", "987654"]` | - |
 | `base_path` | 云盘基础路径 | `/QQ群文件` |
 | `path_template` | 文件夹路径模板 | `{group_name}_{group_id}/{file_type}` |
-| `sync_interval_minutes` | 同步间隔（分钟） | `1440` |
+| `sync_interval_minutes` | 同步间隔（分钟） | `5` |
 | `file_type_whitelist` | 允许的文件类型，如 `[".pdf", ".docx"]` | `["*"]` |
 | `retry_queue_enabled` | 启用失败重试队列 | `true` |
 | `retry_max_attempts` | 最大重试次数 | `3` |
@@ -61,7 +113,7 @@ QQ群文件自动同步到NextCloud私有云盘的AstrBot插件。
 
 ## 安装
 
-1. 将 `file_sync_plugin` 目录复制到AstrBot插件目录
+1. 将 `file_sync_plugin2` 目录复制到AstrBot插件目录
 2. 在AstrBot管理面板中启用插件
 3. 配置NextCloud连接信息和启用的群号
 4. 使用 `/同步文件` 命令手动触发首次同步
@@ -69,10 +121,10 @@ QQ群文件自动同步到NextCloud私有云盘的AstrBot插件。
 ## 项目结构
 
 ```
-file_sync_plugin/
+file_sync_plugin2/
 ├── __init__.py
-├── plugin.py           # 主插件类
-├── plugin.json        # 插件元数据
+├── main.py            # 主插件类
+├── metadata.yaml      # 插件元数据
 ├── config.py          # 配置模型
 ├── requirements.txt   # 依赖
 ├── README.md          # 插件说明
@@ -80,7 +132,6 @@ file_sync_plugin/
 │   └── sync_record.py
 ├── services/          # 核心服务
 │   ├── cloud_sync.py      # NextCloud同步
-│   ├── file_scanner.py    # QQ群文件扫描
 │   └── state_manager.py   # 状态管理(SQLite)
 └── utils/             # 工具函数
     └── rename.py      # 文件重命名
@@ -88,8 +139,6 @@ file_sync_plugin/
 
 ## 依赖
 
-- `nc_py_api >= 2.0.0` - NextCloud Python API
-- `APScheduler >= 3.10.0` - 定时任务调度
 - `httpx >= 0.24.0` - HTTP客户端
 
 ## 开发
@@ -97,7 +146,7 @@ file_sync_plugin/
 ### 运行测试
 
 ```bash
-pip install -r file_sync_plugin/requirements.txt
+pip install -r file_sync_plugin2/requirements.txt
 pytest tests/ -v
 ```
 
