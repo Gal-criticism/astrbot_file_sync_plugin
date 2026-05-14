@@ -2,6 +2,7 @@ import httpx
 import logging
 import time
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -257,72 +258,113 @@ class CloudSyncService:
 
     def upload_file_direct(self, local_path: str, remote_path: str, file_size: int = 0, max_retries: int = 3) -> bool:
         """直接上传文件（不分块）"""
-        logger.info(f"开始直接上传: {local_path} -> {remote_path}")
+        logger.info(f"[UPLOAD] 开始直接上传: {local_path} -> {remote_path}")
+        logger.info(f"[UPLOAD] 文件大小: {file_size} 字节 ({file_size / (1024*1024):.2f} MB)")
+
+        # 检查本地文件是否存在
+        if not os.path.exists(local_path):
+            logger.error(f"[UPLOAD] 本地文件不存在: {local_path}")
+            return False
+
+        # 获取本地文件实际大小
+        actual_size = os.path.getsize(local_path)
+        logger.info(f"[UPLOAD] 本地文件实际大小: {actual_size} 字节 ({actual_size / (1024*1024):.2f} MB)")
 
         for attempt in range(max_retries):
+            logger.info(f"[UPLOAD] 尝试 {attempt + 1}/{max_retries}")
             try:
-                # 检查文件是否存在，如存在则重命名
+                # 检查远程文件是否存在，如存在则重命名
+                logger.debug(f"[UPLOAD] 检查远程文件是否存在: {remote_path}")
                 if self.file_exists(remote_path):
                     original_name = remote_path.split("/")[-1]
                     new_name = generate_unique_filename(original_name)
                     remote_path = remote_path.rsplit("/", 1)[0] + "/" + new_name
-                    logger.info(f"文件已存在，重命名为: {new_name}")
+                    logger.info(f"[UPLOAD] 文件已存在，重命名为: {new_name}")
 
                 # 确保目录存在
                 if "/" not in remote_path:
-                    logger.error(f"远程路径格式无效: {remote_path}")
+                    logger.error(f"[UPLOAD] 远程路径格式无效: {remote_path}")
                     return False
                 dir_path = remote_path.rsplit("/", 1)[0]
+                logger.debug(f"[UPLOAD] 确保目录存在: {dir_path}")
                 if dir_path and not self.ensure_directory_exists(dir_path):
+                    logger.error(f"[UPLOAD] 创建目录失败: {dir_path}")
                     return False
 
                 # 上传文件 (WebDAV PUT) - 流式上传支持大文件
                 url = f"{self._dav_url}{remote_path}"
-                logger.info(f"文件大小: {file_size} 字节, 目标: {url}, 尝试: {attempt + 1}/{max_retries}")
+                logger.info(f"[UPLOAD] 上传 URL: {url}")
 
                 # 根据文件大小动态调整超时时间
                 timeout = max(600, file_size // (1024 * 1024) * 15)  # 至少 10 分钟，每 MB 增加 15 秒
-                logger.info(f"设置超时时间: {timeout} 秒")
+                logger.info(f"[UPLOAD] 设置超时时间: {timeout} 秒")
 
                 start_time = time.time()
                 with self._get_client(timeout=timeout) as client:
+                    logger.debug(f"[UPLOAD] 打开本地文件: {local_path}")
                     with open(local_path, "rb") as f:
+                        logger.debug(f"[UPLOAD] 开始 PUT 请求...")
                         response = client.put(url, content=f)
                     elapsed = time.time() - start_time
 
+                    logger.info(f"[UPLOAD] 响应状态码: {response.status_code}")
+                    logger.debug(f"[UPLOAD] 响应头: {dict(response.headers)}")
+
                     if response.status_code in (201, 204):
                         speed = file_size / elapsed / 1024 / 1024 if elapsed > 0 else 0
-                        logger.info(f"上传成功: {remote_path} (状态码: {response.status_code}, 耗时: {elapsed:.1f}秒, 速度: {speed:.2f} MB/s)")
+                        logger.info(f"[UPLOAD] 上传成功: {remote_path} (状态码: {response.status_code}, 耗时: {elapsed:.1f}秒, 速度: {speed:.2f} MB/s)")
                         # 清除进度文件
                         self._clear_upload_progress(local_path, remote_path)
                         return True
                     else:
-                        logger.error(f"上传失败: {remote_path} (状态码: {response.status_code}, 响应: {response.text[:200]})")
+                        logger.error(f"[UPLOAD] 上传失败: {remote_path}")
+                        logger.error(f"[UPLOAD] 状态码: {response.status_code}")
+                        logger.error(f"[UPLOAD] 响应内容: {response.text[:500]}")
+                        logger.error(f"[UPLOAD] 响应头: {dict(response.headers)}")
                         if attempt < max_retries - 1:
-                            logger.info(f"等待 10 秒后重试...")
+                            logger.info(f"[UPLOAD] 等待 10 秒后重试...")
                             time.sleep(10)
                             continue
                         return False
 
             except httpx.TimeoutException as e:
                 elapsed = time.time() - start_time
-                logger.warning(f"上传超时 {remote_path} (尝试 {attempt + 1}/{max_retries}, 耗时: {elapsed:.1f}秒): {e}")
+                logger.error(f"[UPLOAD] 上传超时 {remote_path}")
+                logger.error(f"[UPLOAD] 尝试: {attempt + 1}/{max_retries}, 耗时: {elapsed:.1f}秒")
+                logger.error(f"[UPLOAD] 超时异常: {type(e).__name__}: {e}")
                 if attempt < max_retries - 1:
-                    logger.info(f"等待 30 秒后重试...")
+                    logger.info(f"[UPLOAD] 等待 30 秒后重试...")
                     time.sleep(30)
                     continue
                 return False
             except httpx.HTTPError as e:
-                logger.warning(f"上传 HTTP 错误 {remote_path} (尝试 {attempt + 1}/{max_retries}): {e}")
+                logger.error(f"[UPLOAD] HTTP 错误 {remote_path}")
+                logger.error(f"[UPLOAD] 尝试: {attempt + 1}/{max_retries}")
+                logger.error(f"[UPLOAD] HTTP 异常: {type(e).__name__}: {e}")
+                logger.error(f"[UPLOAD] 请求 URL: {url}")
                 if attempt < max_retries - 1:
-                    logger.info(f"等待 10 秒后重试...")
+                    logger.info(f"[UPLOAD] 等待 10 秒后重试...")
+                    time.sleep(10)
+                    continue
+                return False
+            except ConnectionError as e:
+                logger.error(f"[UPLOAD] 连接错误 {remote_path}")
+                logger.error(f"[UPLOAD] 尝试: {attempt + 1}/{max_retries}")
+                logger.error(f"[UPLOAD] 连接异常: {type(e).__name__}: {e}")
+                if attempt < max_retries - 1:
+                    logger.info(f"[UPLOAD] 等待 10 秒后重试...")
                     time.sleep(10)
                     continue
                 return False
             except Exception as e:
-                logger.error(f"上传文件失败 {remote_path}: {type(e).__name__}: {e}", exc_info=True)
+                logger.error(f"[UPLOAD] 未知错误 {remote_path}")
+                logger.error(f"[UPLOAD] 尝试: {attempt + 1}/{max_retries}")
+                logger.error(f"[UPLOAD] 异常类型: {type(e).__name__}")
+                logger.error(f"[UPLOAD] 异常信息: {e}")
+                logger.error(f"[UPLOAD] 异常详情:", exc_info=True)
                 return False
 
+        logger.error(f"[UPLOAD] 所有重试都失败了: {remote_path}")
         return False
 
     def upload_file(self, local_path: str, remote_path: str, file_size: int = 0, max_retries: int = 3) -> bool:

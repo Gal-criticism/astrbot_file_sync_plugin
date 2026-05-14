@@ -658,13 +658,28 @@ class FileSyncPlugin(Star):
             logger.info(f"文件下载完成，大小: {downloaded_size / (1024*1024):.1f} MB, 耗时: {elapsed:.1f}秒, 速度: {speed:.2f} MB/s")
 
             remote_path = f"{target_path}/{file_name}"
-            logger.info(f"正在上传文件到NextCloud: {remote_path}")
+            logger.info(f"[SYNC] 准备上传文件到NextCloud: {remote_path}")
+            logger.info(f"[SYNC] 本地文件: {local_path}")
+            logger.info(f"[SYNC] 文件大小: {file_size} 字节 ({file_size / (1024*1024):.2f} MB)")
+
+            # 检查本地文件是否存在
+            if not local_path.exists():
+                logger.error(f"[SYNC] 本地文件不存在: {local_path}")
+                return False
+
+            # 获取本地文件实际大小
+            actual_size = local_path.stat().st_size
+            logger.info(f"[SYNC] 本地文件实际大小: {actual_size} 字节 ({actual_size / (1024*1024):.2f} MB)")
+
             upload_success = await asyncio.to_thread(self.cloud_sync.upload_file, str(local_path), remote_path, file_size)
 
             if upload_success:
-                logger.info(f"文件同步成功: {file_name}")
+                logger.info(f"[SYNC] 文件同步成功: {file_name}")
             else:
-                logger.error(f"文件上传失败: {file_name}")
+                logger.error(f"[SYNC] 文件上传失败: {file_name}")
+                logger.error(f"[SYNC] 本地文件: {local_path}")
+                logger.error(f"[SYNC] 远程路径: {remote_path}")
+                logger.error(f"[SYNC] 文件大小: {file_size} 字节")
 
             return upload_success
 
