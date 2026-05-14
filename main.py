@@ -262,14 +262,41 @@ class FileSyncPlugin(Star):
         if not self.state_manager:
             yield event.plain_result("状态管理器未初始化")
             return
-        stats = self.state_manager.get_sync_stats()
-        pending = self.state_manager.get_pending_retries()
-        logger.info(f"同步统计: 已同步 {stats['total_synced']} 个文件，待重试 {len(pending)} 个")
-        msg = f"已同步文件: {stats['total_synced']}\n待重试任务: {stats['pending_retries']}"
-        if pending:
-            msg += "\n\n待重试文件:"
-            for p in pending[:5]:
-                msg += f"\n- {p['file_name']} (尝试 {p['attempts']} 次)"
+
+        # 获取命令参数（群号）
+        args = event.message_str.strip().split()
+        group_id = args[1] if len(args) > 1 else None
+
+        if group_id:
+            # 查看指定群的详细统计
+            stats = self.state_manager.get_group_stats(group_id)
+            msg = f"=== 群 {group_id} 同步统计 ===\n"
+            msg += f"已同步文件: {stats['synced']}\n"
+            msg += f"待重试: {stats['pending']}\n"
+            msg += f"最后同步: {stats['last_sync_time'] or '从未同步'}\n"
+
+            if stats['recent_files']:
+                msg += "\n最近同步文件:\n"
+                for f in stats['recent_files']:
+                    msg += f"- {f['name']} ({f['size']} 字节)\n"
+        else:
+            # 显示总览 + 分群统计
+            total_stats = self.state_manager.get_sync_stats()
+            group_stats = self.state_manager.get_sync_stats_by_group()
+
+            msg = "=== 同步统计总览 ===\n"
+            msg += f"总同步文件: {total_stats['total_synced']}\n"
+            msg += f"总待重试: {total_stats['pending_retries']}\n"
+            msg += f"启用群数: {len(self.config.enabled_groups)}\n"
+
+            if group_stats:
+                msg += "\n=== 分群统计 ===\n"
+                for gid, stats in group_stats.items():
+                    msg += f"\n群 {gid}:\n"
+                    msg += f"  已同步: {stats['synced']}\n"
+                    msg += f"  待重试: {stats['pending']}\n"
+                    msg += f"  最后同步: {stats['last_sync_time'] or '从未同步'}\n"
+
         yield event.plain_result(msg)
 
     @filter.command("同步调试")

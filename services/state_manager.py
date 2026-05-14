@@ -139,11 +139,83 @@ class StateManager:
         conn.commit()
 
     def get_sync_stats(self) -> dict:
-        """获取同步统计"""
+        """获取同步统计（总览）"""
         conn = self._get_conn()
         total = conn.execute("SELECT COUNT(*) FROM sync_records").fetchone()[0]
         pending = conn.execute("SELECT COUNT(*) FROM retry_queue").fetchone()[0]
         return {"total_synced": total, "pending_retries": pending}
+
+    def get_sync_stats_by_group(self) -> dict:
+        """获取分群同步统计"""
+        conn = self._get_conn()
+
+        # 获取每个群的同步文件数
+        cursor = conn.execute(
+            "SELECT group_id, COUNT(*) as count FROM sync_records GROUP BY group_id"
+        )
+        synced_by_group = {row[0]: row[1] for row in cursor.fetchall()}
+
+        # 获取每个群的待重试数
+        cursor = conn.execute(
+            "SELECT group_id, COUNT(*) as count FROM retry_queue GROUP BY group_id"
+        )
+        pending_by_group = {row[0]: row[1] for row in cursor.fetchall()}
+
+        # 获取每个群的最后同步时间
+        cursor = conn.execute(
+            "SELECT group_id, last_sync_time FROM last_sync_times"
+        )
+        last_sync_by_group = {row[0]: row[1] for row in cursor.fetchall()}
+
+        # 合并数据
+        all_groups = set(synced_by_group.keys()) | set(pending_by_group.keys()) | set(last_sync_by_group.keys())
+        stats_by_group = {}
+        for group_id in all_groups:
+            stats_by_group[group_id] = {
+                "synced": synced_by_group.get(group_id, 0),
+                "pending": pending_by_group.get(group_id, 0),
+                "last_sync_time": last_sync_by_group.get(group_id, None)
+            }
+
+        return stats_by_group
+
+    def get_group_stats(self, group_id: str) -> dict:
+        """获取指定群的详细统计"""
+        conn = self._get_conn()
+
+        # 获取该群的同步文件数
+        cursor = conn.execute(
+            "SELECT COUNT(*) FROM sync_records WHERE group_id = ?", (group_id,)
+        )
+        synced = cursor.fetchone()[0]
+
+        # 获取该群的待重试数
+        cursor = conn.execute(
+            "SELECT COUNT(*) FROM retry_queue WHERE group_id = ?", (group_id,)
+        )
+        pending = cursor.fetchone()[0]
+
+        # 获取该群的最后同步时间
+        cursor = conn.execute(
+            "SELECT last_sync_time FROM last_sync_times WHERE group_id = ?", (group_id,)
+        )
+        row = cursor.fetchone()
+        last_sync_time = row[0] if row else None
+
+        # 获取该群最近同步的文件列表
+        cursor = conn.execute(
+            "SELECT file_name, file_size, sync_time FROM sync_records WHERE group_id = ? ORDER BY sync_time DESC LIMIT 10",
+            (group_id,)
+        )
+        recent_files = [{"name": row[0], "size": row[1], "time": row[2]} for row in cursor.fetchall()]
+
+        return {
+            "group_id": group_id,
+            "synced": synced,
+            "pending": pending,
+            "last_sync_time": last_sync_time,
+            "recent_files": recent_files
+        }
 
     def add_diagnostic_log(self, log_type: str, message: str, data: dict = None):
         """添加诊断日志"""
