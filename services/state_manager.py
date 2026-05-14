@@ -14,6 +14,7 @@ class StateManager:
     def __init__(self, db_path: str = "file_sync_state.db"):
         self.db_path = db_path
         self._conn = None
+        self._diagnostic_logs = []  # 诊断日志收集器
         self._init_db()
 
     def _get_conn(self):
@@ -65,10 +66,21 @@ class StateManager:
         conn.commit()
 
     def is_synced(self, file_id: str) -> bool:
-        """检查文件是否已同步"""
+        """检查文件是否已同步（基于 file_id）"""
+        if not file_id:
+            return False
         conn = self._get_conn()
         cursor = conn.execute(
             "SELECT 1 FROM sync_records WHERE file_id = ?", (file_id,)
+        )
+        return cursor.fetchone() is not None
+
+    def is_synced_by_name_size(self, file_name: str, file_size: int, group_id: str) -> bool:
+        """检查文件是否已同步（基于文件名+大小+群号）"""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "SELECT 1 FROM sync_records WHERE file_name = ? AND file_size = ? AND group_id = ?",
+            (file_name, file_size, group_id)
         )
         return cursor.fetchone() is not None
 
@@ -132,6 +144,31 @@ class StateManager:
         total = conn.execute("SELECT COUNT(*) FROM sync_records").fetchone()[0]
         pending = conn.execute("SELECT COUNT(*) FROM retry_queue").fetchone()[0]
         return {"total_synced": total, "pending_retries": pending}
+
+    def add_diagnostic_log(self, log_type: str, message: str, data: dict = None):
+        """添加诊断日志"""
+        log_entry = {
+            "timestamp": datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+            "type": log_type,
+            "message": message,
+            "data": data or {}
+        }
+        self._diagnostic_logs.append(log_entry)
+        # 只保留最近 100 条日志
+        if len(self._diagnostic_logs) > 100:
+            self._diagnostic_logs = self._diagnostic_logs[-100:]
+
+    def get_diagnostic_logs(self, log_type: str = None, limit: int = 50) -> List[dict]:
+        """获取诊断日志"""
+        if log_type:
+            filtered = [log for log in self._diagnostic_logs if log["type"] == log_type]
+        else:
+            filtered = self._diagnostic_logs
+        return filtered[-limit:]
+
+    def clear_diagnostic_logs(self):
+        """清空诊断日志"""
+        self._diagnostic_logs.clear()
 
     def get_last_sync_time(self, group_id: str) -> Optional[datetime]:
         """获取指定群的上次同步时间"""

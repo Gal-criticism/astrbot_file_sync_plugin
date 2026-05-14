@@ -314,6 +314,40 @@ class FileSyncPlugin(Star):
         logger.info(f"调试信息: {msg}")
         yield event.plain_result(msg)
 
+    @filter.command("诊断日志")
+    async def diagnostic_logs_command(self, event: AstrMessageEvent):
+        """查看诊断日志"""
+        logger.info("收到查看诊断日志命令")
+        if not self.state_manager:
+            yield event.plain_result("状态管理器未初始化")
+            return
+
+        logs = self.state_manager.get_diagnostic_logs(limit=20)
+        if not logs:
+            yield event.plain_result("暂无诊断日志，请先执行一次同步")
+            return
+
+        msg = "=== 最近诊断日志 ===\n"
+        for log in logs:
+            msg += f"[{log['timestamp']}] {log['type']}: {log['message']}\n"
+            if log['data']:
+                for key, value in log['data'].items():
+                    msg += f"  - {key}: {value}\n"
+            msg += "\n"
+
+        yield event.plain_result(msg)
+
+    @filter.command("清空诊断日志")
+    async def clear_diagnostic_logs_command(self, event: AstrMessageEvent):
+        """清空诊断日志"""
+        logger.info("收到清空诊断日志命令")
+        if not self.state_manager:
+            yield event.plain_result("状态管理器未初始化")
+            return
+
+        self.state_manager.clear_diagnostic_logs()
+        yield event.plain_result("诊断日志已清空")
+
     async def sync_all_groups(self) -> int:
         """同步所有配置的群，返回同步的群数量"""
         logger.info("开始同步所有群...")
@@ -417,6 +451,11 @@ class FileSyncPlugin(Star):
         logger.info(f"正在同步群: {group_name} ({group_id})")
 
         last_sync_time = self.state_manager.get_last_sync_time(group_id)
+        self.state_manager.add_diagnostic_log("sync_state", f"群 {group_id} 同步状态", {
+            "group_id": group_id,
+            "last_sync_time": str(last_sync_time),
+            "is_first_sync": last_sync_time is None
+        })
         if last_sync_time:
             logger.info(f"群 {group_id} 上次同步时间: {last_sync_time}")
         else:
@@ -441,17 +480,56 @@ class FileSyncPlugin(Star):
 
             upload_time = datetime.fromtimestamp(upload_time_ts, tz=CN_TZ) if upload_time_ts else None
 
+            # 收集诊断日志
+            self.state_manager.add_diagnostic_log("file_info", f"文件: {file_name}", {
+                "file_id": file_id,
+                "file_size": file_size,
+                "upload_time_ts": upload_time_ts,
+                "upload_time": str(upload_time),
+                "last_sync_time": str(last_sync_time),
+                "raw_fields": list(file_info.keys())
+            })
+
             if not self.config.is_file_type_allowed(file_name):
-                logger.debug(f"跳过不允许的文件类型: {file_name}")
+                self.state_manager.add_diagnostic_log("skip", f"跳过不允许的文件类型: {file_name}", {"reason": "file_type_not_allowed"})
                 continue
 
+            # 时间戳检查
             if last_sync_time and upload_time:
                 if upload_time <= last_sync_time:
-                    logger.debug(f"跳过旧文件: {file_name} (上传时间: {upload_time})")
+                    self.state_manager.add_diagnostic_log("skip", f"跳过旧文件: {file_name}", {
+                        "reason": "old_file",
+                        "upload_time": str(upload_time),
+                        "last_sync_time": str(last_sync_time)
+                    })
                     continue
+                else:
+                    self.state_manager.add_diagnostic_log("check", f"文件较新: {file_name}", {
+                        "reason": "new_file",
+                        "upload_time": str(upload_time),
+                        "last_sync_time": str(last_sync_time)
+                    })
+            else:
+                self.state_manager.add_diagnostic_log("check", f"跳过时间戳检查: {file_name}", {
+                    "reason": "missing_time",
+                    "has_last_sync_time": last_sync_time is not None,
+                    "has_upload_time": upload_time is not None
+                })
 
+            # 第一层去重：基于 file_id
             if self.state_manager.is_synced(file_id):
-                logger.debug(f"跳过已同步文件: {file_name} (ID: {file_id})")
+                self.state_manager.add_diagnostic_log("skip", f"跳过已同步文件(file_id): {file_name}", {
+                    "reason": "file_id_synced",
+                    "file_id": file_id
+                })
+                continue
+
+            # 第二层去重：基于文件名+大小+群号
+            if self.state_manager.is_synced_by_name_size(file_name, file_size, group_id):
+                self.state_manager.add_diagnostic_log("skip", f"跳过已同步文件(name+size): {file_name}", {
+                    "reason": "name_size_synced",
+                    "file_size": file_size
+                })
                 continue
 
             target_path = self.config.generate_target_path(group_name, group_id, file_name)
@@ -470,6 +548,12 @@ class FileSyncPlugin(Star):
                     target_path=target_path,
                     sync_time=datetime.now(CN_TZ)
                 )
+                self.state_manager.add_diagnostic_log("sync_success", f"文件同步成功: {file_name}", {
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "file_size": file_size,
+                    "target_path": target_path
+                })
                 self.state_manager.add_sync_record(record)
             else:
                 if self.config.retry_queue_enabled:
@@ -478,6 +562,11 @@ class FileSyncPlugin(Star):
                         self.config.retry_delay_seconds
                     )
 
+        self.state_manager.add_diagnostic_log("sync_state", f"群 {group_id} 同步完成", {
+            "group_id": group_id,
+            "new_files_count": new_files_count,
+            "sync_time": str(sync_time)
+        })
         self.state_manager.update_last_sync_time(group_id, sync_time)
         logger.info(f"群 {group_id} 同步完成，新增 {new_files_count} 个文件")
 
