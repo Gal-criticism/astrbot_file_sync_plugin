@@ -369,20 +369,34 @@ class CloudSyncService:
 
     def upload_file(self, local_path: str, remote_path: str, file_size: int = 0, max_retries: int = 3) -> bool:
         """上传文件到NextCloud（自动选择上传方式）"""
+        # 使用 print 确保日志输出
+        print(f"[UPLOAD-DEBUG] ===== upload_file 方法入口 =====", flush=True)
+        print(f"[UPLOAD-DEBUG] local_path: {local_path}", flush=True)
+        print(f"[UPLOAD-DEBUG] remote_path: {remote_path}", flush=True)
+        print(f"[UPLOAD-DEBUG] file_size: {file_size} 字节 ({file_size / (1024*1024):.2f} MB)", flush=True)
+
         logger.info(f"[UPLOAD] upload_file 被调用")
         logger.info(f"[UPLOAD] local_path: {local_path}")
         logger.info(f"[UPLOAD] remote_path: {remote_path}")
         logger.info(f"[UPLOAD] file_size: {file_size} 字节 ({file_size / (1024*1024):.2f} MB)")
 
-        # 根据文件大小选择上传方式
-        chunk_threshold = 100 * 1024 * 1024  # 100MB
+        try:
+            # 根据文件大小选择上传方式
+            chunk_threshold = 100 * 1024 * 1024  # 100MB
 
-        if file_size >= chunk_threshold:
-            logger.info(f"[UPLOAD] 文件大于 {chunk_threshold / (1024*1024):.0f} MB，使用分块上传")
-            return self.upload_file_chunked(local_path, remote_path, file_size, max_retries)
-        else:
-            logger.info(f"[UPLOAD] 文件小于 {chunk_threshold / (1024*1024):.0f} MB，使用直接上传")
-            return self.upload_file_direct(local_path, remote_path, file_size, max_retries)
+            if file_size >= chunk_threshold:
+                logger.info(f"[UPLOAD] 文件大于 {chunk_threshold / (1024*1024):.0f} MB，使用分块上传")
+                print(f"[UPLOAD-DEBUG] 使用分块上传", flush=True)
+                return self.upload_file_chunked(local_path, remote_path, file_size, max_retries)
+            else:
+                logger.info(f"[UPLOAD] 文件小于 {chunk_threshold / (1024*1024):.0f} MB，使用直接上传")
+                print(f"[UPLOAD-DEBUG] 使用直接上传", flush=True)
+                return self.upload_file_direct(local_path, remote_path, file_size, max_retries)
+        except Exception as e:
+            print(f"[UPLOAD-DEBUG] 异常: {type(e).__name__}: {e}", flush=True)
+            logger.error(f"[UPLOAD] 异常: {type(e).__name__}: {e}")
+            logger.error(f"[UPLOAD] 异常详情:", exc_info=True)
+            return False
 
     def download_file(self, remote_path: str, local_path: str) -> bool:
         """从NextCloud下载文件"""
