@@ -4,16 +4,17 @@ QQ群文件自动同步到NextCloud私有云盘的AstrBot插件。
 
 ## 功能
 
-- 定时扫描QQ群文件夹
+- 定时扫描QQ群文件夹（支持间隔模式和时间点模式）
 - 自动同步文件到NextCloud
 - 支持多群配置
 - 文件按类型分类存储（可自定义路径模板）
 - 文件重名自动重命名
 - 同步失败自动重试
 - 增量同步（只同步新增文件）
-- **双重去重策略**：时间戳快速跳过 + file_id 兜底检查
+- **三层去重策略**：时间戳快速跳过 + file_id 精确匹配 + 文件名+大小+群号 兜底检查
 - **统一北京时间**：所有时间操作使用东八区时区
 - **重试失败通知**：达到最大重试次数后通知用户
+- **诊断日志**：记录同步过程中的详细决策信息，便于排查问题
 
 ## 核心逻辑
 
@@ -28,12 +29,15 @@ flowchart TD
     F --> G{文件类型允许?}
     G -->|否| H[跳过文件]
     G -->|是| I{时间戳检查}
-    
+
     I -->|upload_time <= last_sync| J[跳过旧文件]
-    I -->|upload_time > last_sync| K{file_id 兜底检查}
-    
+    I -->|upload_time > last_sync| K{第一层: file_id 精确匹配}
+
     K -->|已同步| L[跳过重复文件]
-    K -->|未同步| M[生成目标路径]
+    K -->|未同步| K2{第二层: 文件名+大小+群号}
+
+    K2 -->|已同步| L
+    K2 -->|未同步| M[生成目标路径]
     
     M --> N[下载文件]
     N --> O{下载成功?}
@@ -56,19 +60,23 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    A[新文件] --> B{第一层: 时间戳快速跳过}
+    A[新文件] --> B{时间戳快速跳过}
     B -->|upload_time <= last_sync| C[跳过]
-    B -->|upload_time > last_sync| D{第二层: file_id兜底检查}
+    B -->|upload_time > last_sync| D{第一层: file_id 精确匹配}
     D -->|已同步| C
-    D -->|未同步| E[执行同步]
+    D -->|未同步| E{第二层: 文件名+大小+群号}
+    E -->|已同步| C
+    E -->|未同步| F[执行同步]
 ```
 
 ## 命令
 
 - `/同步文件` - 手动触发同步（增量同步）
-- `/同步状态` - 查看同步状态
-- `/同步统计` - 查看同步统计
-- `/同步调试` - 检查后端支持的 API
+- `/同步状态` - 查看同步状态（已同步文件数、待重试数）
+- `/同步统计 [群号]` - 查看同步统计，支持按群号筛选；无参数时显示总览+分群统计
+- `/同步调试` - 检查后端支持的 API 端点
+- `/诊断日志` - 查看最近 20 条诊断日志
+- `/清空诊断日志` - 清空诊断日志
 
 ## 配置
 
@@ -82,8 +90,11 @@ flowchart LR
 | `enabled_groups` | 启用的群号列表，如 `["123456", "987654"]` | - |
 | `base_path` | 云盘基础路径 | `/QQ群文件` |
 | `path_template` | 文件夹路径模板 | `{group_name}_{group_id}/{file_type}` |
-| `sync_interval_minutes` | 同步间隔（分钟） | `5` |
-| `file_type_whitelist` | 允许的文件类型，如 `[".pdf", ".docx"]` | `["*"]` |
+| `sync_interval_minutes` | 同步间隔（分钟），时间点模式下无效 | `1440` |
+| `sync_time_points` | 同步时间点，格式 `["08:00", "12:00"]`，配置后覆盖间隔模式 | `[]` |
+| `file_type_whitelist` | 允许的文件类型，如 `[".pdf", ".docx"]`，`["*"]` 表示全部 | `["*"]` |
+| `notify_on_success` | 同步成功时通知 | `false` |
+| `notify_on_error` | 同步失败时通知 | `true` |
 | `retry_queue_enabled` | 启用失败重试队列 | `true` |
 | `retry_max_attempts` | 最大重试次数 | `3` |
 | `retry_delay_seconds` | 重试间隔（秒） | `300` |
@@ -149,16 +160,6 @@ file_sync_plugin2/
 pip install -r file_sync_plugin2/requirements.txt
 pytest tests/ -v
 ```
-
-### 项目路径模板
-
-插件支持灵活的文件路径模板，占位符：
-
-| 占位符 | 说明 |
-|--------|------|
-| `{group_name}` | QQ群名称 |
-| `{group_id}` | QQ群号 |
-| `{file_type}` | 文件扩展名（小写） |
 
 ## License
 
