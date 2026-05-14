@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from ..config import FileSyncConfig
 from ..utils.rename import generate_unique_filename
@@ -63,7 +64,9 @@ class CloudSyncService:
         if not path.startswith("/"):
             path = "/" + path
         try:
-            url = f"{self._dav_url}{path}"
+            # URL-encode path 以处理特殊字符
+            encoded_path = quote(path, safe="/")
+            url = f"{self._dav_url}{encoded_path}"
             logger.debug(f"检查路径是否存在: {url}")
             with self._get_client() as client:
                 response = client.request("PROPFIND", url, headers={"Depth": "0"})
@@ -90,7 +93,8 @@ class CloudSyncService:
                     continue
                 current_path += "/" + segment
                 if not self._path_exists(current_path):
-                    url = f"{self._dav_url}{current_path}"
+                    encoded_current_path = quote(current_path, safe="/")
+                    url = f"{self._dav_url}{encoded_current_path}"
                     with self._get_client() as client:
                         response = client.request("MKCOL", url)
                         if response.status_code in (201, 405):
@@ -211,7 +215,8 @@ class CloudSyncService:
 
                         # 临时方案：直接上传整个文件（流式）
                         # 这里我们使用流式上传，但记录进度
-                        chunk_url = f"{self._dav_url}{remote_path}"
+                        encoded_remote_path = quote(remote_path, safe="/")
+                        chunk_url = f"{self._dav_url}{encoded_remote_path}"
 
                         # 对于分块上传，我们需要使用不同的策略
                         # 这里我们使用一个简化方案：直接上传整个文件
@@ -303,7 +308,9 @@ class CloudSyncService:
                     return False
 
                 # 上传文件 (WebDAV PUT) - 流式上传支持大文件
-                url = f"{self._dav_url}{remote_path}"
+                # URL-encode remote_path 以处理特殊字符（如中文、括号等）
+                encoded_remote_path = quote(remote_path, safe="/")
+                url = f"{self._dav_url}{encoded_remote_path}"
                 logger.info(f"[UPLOAD] 上传 URL: {url}")
 
                 # 根据文件大小动态调整超时时间
@@ -406,7 +413,8 @@ class CloudSyncService:
         if not remote_path.startswith("/"):
             remote_path = "/" + remote_path
         try:
-            url = f"{self._dav_url}{remote_path}"
+            encoded_remote_path = quote(remote_path, safe="/")
+            url = f"{self._dav_url}{encoded_remote_path}"
             with self._get_client() as client:
                 response = client.get(url)
                 if response.status_code == 200:
