@@ -702,9 +702,27 @@ class FileSyncPlugin(Star):
                 return False
 
             logger.info(f"[SYNC] 开始调用 cloud_sync.upload_file...")
+            logger.info(f"[SYNC] cloud_sync 类型: {type(self.cloud_sync)}")
+            logger.info(f"[SYNC] cloud_sync.upload_file 类型: {type(self.cloud_sync.upload_file)}")
             logger.info(f"[SYNC] 上传前检查 - 文件存在: {local_path.exists()}, 大小: {local_path.stat().st_size if local_path.exists() else 'N/A'}")
+
+            # 直接在线程中调用，添加更多日志
+            def _upload_with_logs():
+                logger.info(f"[SYNC-THREAD] 开始在线程中执行上传...")
+                logger.info(f"[SYNC-THREAD] local_path: {local_path}")
+                logger.info(f"[SYNC-THREAD] remote_path: {remote_path}")
+                logger.info(f"[SYNC-THREAD] file_size: {file_size}")
+                try:
+                    result = self.cloud_sync.upload_file(str(local_path), remote_path, file_size)
+                    logger.info(f"[SYNC-THREAD] upload_file 返回: {result}")
+                    return result
+                except Exception as e:
+                    logger.error(f"[SYNC-THREAD] upload_file 异常: {type(e).__name__}: {e}")
+                    logger.error(f"[SYNC-THREAD] 异常详情:", exc_info=True)
+                    raise
+
             try:
-                upload_success = await asyncio.to_thread(self.cloud_sync.upload_file, str(local_path), remote_path, file_size)
+                upload_success = await asyncio.to_thread(_upload_with_logs)
                 logger.info(f"[SYNC] cloud_sync.upload_file 返回: {upload_success}")
                 logger.info(f"[SYNC] 上传后检查 - 文件存在: {local_path.exists()}, 大小: {local_path.stat().st_size if local_path.exists() else 'N/A'}")
             except Exception as e:
