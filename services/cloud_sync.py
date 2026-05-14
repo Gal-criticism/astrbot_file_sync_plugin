@@ -59,6 +59,9 @@ class CloudSyncService:
 
     def _path_exists(self, path: str) -> bool:
         """通过 WebDAV PROPFIND 检查路径是否存在"""
+        # 确保 path 以 / 开头，避免 URL 拼接错误
+        if not path.startswith("/"):
+            path = "/" + path
         try:
             url = f"{self._dav_url}{path}"
             logger.debug(f"检查路径是否存在: {url}")
@@ -144,6 +147,11 @@ class CloudSyncService:
 
     def upload_file_chunked(self, local_path: str, remote_path: str, file_size: int = 0, max_retries: int = 3) -> bool:
         """分块上传大文件（支持断点续传）"""
+        # 确保 remote_path 以 / 开头，避免 URL 拼接错误
+        if not remote_path.startswith("/"):
+            remote_path = "/" + remote_path
+            logger.warning(f"[UPLOAD] remote_path 缺少开头的 /，已自动添加: {remote_path}")
+
         logger.info(f"开始分块上传: {local_path} -> {remote_path}")
 
         # 检查文件大小限制（默认 10GB）
@@ -256,6 +264,11 @@ class CloudSyncService:
 
     def upload_file_direct(self, local_path: str, remote_path: str, file_size: int = 0, max_retries: int = 3) -> bool:
         """直接上传文件（不分块）"""
+        # 确保 remote_path 以 / 开头，避免 URL 拼接错误
+        if not remote_path.startswith("/"):
+            remote_path = "/" + remote_path
+            logger.warning(f"[UPLOAD] remote_path 缺少开头的 /，已自动添加: {remote_path}")
+
         logger.info(f"[UPLOAD] 开始直接上传: {local_path} -> {remote_path}")
         logger.info(f"[UPLOAD] 文件大小: {file_size} 字节 ({file_size / (1024*1024):.2f} MB)")
 
@@ -389,6 +402,9 @@ class CloudSyncService:
 
     def download_file(self, remote_path: str, local_path: str) -> bool:
         """从NextCloud下载文件"""
+        # 确保 remote_path 以 / 开头，避免 URL 拼接错误
+        if not remote_path.startswith("/"):
+            remote_path = "/" + remote_path
         try:
             url = f"{self._dav_url}{remote_path}"
             with self._get_client() as client:

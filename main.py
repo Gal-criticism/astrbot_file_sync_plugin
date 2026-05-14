@@ -597,6 +597,7 @@ class FileSyncPlugin(Star):
         """同步单个文件"""
         logger.info(f"开始同步文件: {file_name} (ID: {file_id}, 大小: {file_size / (1024*1024):.1f} MB)")
         local_path = None
+        remote_path = f"{target_path}/{file_name}"
         try:
             platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
             if not platform:
