@@ -708,31 +708,30 @@ class FileSyncPlugin(Star):
 
             # 直接在线程中调用，添加更多日志
             def _upload_with_logs():
-                print(f"[SYNC-THREAD-DEBUG] ===== 开始在线程中执行上传 =====", flush=True)
-                print(f"[SYNC-THREAD-DEBUG] local_path: {local_path}", flush=True)
-                print(f"[SYNC-THREAD-DEBUG] remote_path: {remote_path}", flush=True)
-                print(f"[SYNC-THREAD-DEBUG] file_size: {file_size}", flush=True)
-                print(f"[SYNC-THREAD-DEBUG] self.cloud_sync: {self.cloud_sync}", flush=True)
-                print(f"[SYNC-THREAD-DEBUG] self.cloud_sync.upload_file: {self.cloud_sync.upload_file}", flush=True)
+                logger.debug(f"[SYNC-THREAD] ===== 开始在线程中执行上传 =====")
+                logger.debug(f"[SYNC-THREAD] local_path: {local_path}")
+                logger.debug(f"[SYNC-THREAD] remote_path: {remote_path}")
+                logger.debug(f"[SYNC-THREAD] file_size: {file_size}")
+                logger.debug(f"[SYNC-THREAD] self.cloud_sync: {self.cloud_sync}")
+                logger.debug(f"[SYNC-THREAD] self.cloud_sync.upload_file: {self.cloud_sync.upload_file}")
 
-                logger.info(f"[SYNC-THREAD] ===== 开始在线程中执行上传 =====")
-                logger.info(f"[SYNC-THREAD] local_path: {local_path}")
-                logger.info(f"[SYNC-THREAD] remote_path: {remote_path}")
-                logger.info(f"[SYNC-THREAD] file_size: {file_size}")
-                logger.info(f"[SYNC-THREAD] self.cloud_sync: {self.cloud_sync}")
-                logger.info(f"[SYNC-THREAD] self.cloud_sync.upload_file: {self.cloud_sync.upload_file}")
                 try:
-                    print(f"[SYNC-THREAD-DEBUG] 调用 self.cloud_sync.upload_file...", flush=True)
                     logger.info(f"[SYNC-THREAD] 调用 self.cloud_sync.upload_file...")
 
-                    # 直接调用 upload_file 方法
-                    print(f"[SYNC-THREAD-DEBUG] 开始执行 upload_file 方法...", flush=True)
-                    result = self.cloud_sync.upload_file(str(local_path), remote_path, file_size)
-                    print(f"[SYNC-THREAD-DEBUG] upload_file 方法执行完成，返回: {result}", flush=True)
-                    logger.info(f"[SYNC-THREAD] upload_file 返回: {result}")
+                    # 检查文件是否存在
+                    import os
+                    if os.path.exists(local_path):
+                        logger.debug(f"[SYNC-THREAD] 文件存在: {local_path}")
+                    else:
+                        logger.error(f"[SYNC-THREAD] 文件不存在: {local_path}")
+                        return False
+
+                    # 调用 upload_file_direct 方法
+                    logger.info(f"[SYNC-THREAD] 调用 self.cloud_sync.upload_file_direct...")
+                    result = self.cloud_sync.upload_file_direct(str(local_path), remote_path, file_size)
+                    logger.info(f"[SYNC-THREAD] upload_file_direct 返回: {result}")
                     return result
                 except Exception as e:
-                    print(f"[SYNC-THREAD-DEBUG] upload_file 异常: {type(e).__name__}: {e}", flush=True)
                     logger.error(f"[SYNC-THREAD] upload_file 异常: {type(e).__name__}: {e}")
                     logger.error(f"[SYNC-THREAD] 异常详情:", exc_info=True)
                     raise
