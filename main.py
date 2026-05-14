@@ -708,11 +708,14 @@ class FileSyncPlugin(Star):
 
             # 直接在线程中调用，添加更多日志
             def _upload_with_logs():
-                logger.info(f"[SYNC-THREAD] 开始在线程中执行上传...")
+                logger.info(f"[SYNC-THREAD] ===== 开始在线程中执行上传 =====")
                 logger.info(f"[SYNC-THREAD] local_path: {local_path}")
                 logger.info(f"[SYNC-THREAD] remote_path: {remote_path}")
                 logger.info(f"[SYNC-THREAD] file_size: {file_size}")
+                logger.info(f"[SYNC-THREAD] self.cloud_sync: {self.cloud_sync}")
+                logger.info(f"[SYNC-THREAD] self.cloud_sync.upload_file: {self.cloud_sync.upload_file}")
                 try:
+                    logger.info(f"[SYNC-THREAD] 调用 self.cloud_sync.upload_file...")
                     result = self.cloud_sync.upload_file(str(local_path), remote_path, file_size)
                     logger.info(f"[SYNC-THREAD] upload_file 返回: {result}")
                     return result
@@ -722,7 +725,9 @@ class FileSyncPlugin(Star):
                     raise
 
             try:
+                logger.info(f"[SYNC] 调用 asyncio.to_thread...")
                 upload_success = await asyncio.to_thread(_upload_with_logs)
+                logger.info(f"[SYNC] asyncio.to_thread 返回: {upload_success}")
                 logger.info(f"[SYNC] cloud_sync.upload_file 返回: {upload_success}")
                 logger.info(f"[SYNC] 上传后检查 - 文件存在: {local_path.exists()}, 大小: {local_path.stat().st_size if local_path.exists() else 'N/A'}")
             except Exception as e:
