@@ -212,12 +212,6 @@ class FileSyncPlugin(Star):
 
         logger.info("========== 定时同步循环已停止 ==========")
 
-    @staticmethod
-    def _write_file(file_path: Path, content: bytes) -> None:
-        """同步写入文件（用于 asyncio.to_thread 包装）"""
-        with open(file_path, "wb") as f:
-            f.write(content)
-
     @filter.command("同步文件")
     async def sync_files_command(self, event: AstrMessageEvent):
         """手动触发一次同步"""
@@ -600,7 +594,8 @@ class FileSyncPlugin(Star):
     async def sync_single_file(self, group_id: str, target_path: str,
                                file_id: str, file_name: str, file_size: int) -> bool:
         """同步单个文件"""
-        logger.info(f"开始同步文件: {file_name} (ID: {file_id}, 大小: {file_size} 字节)")
+        logger.info(f"开始同步文件: {file_name} (ID: {file_id}, 大小: {file_size / (1024*1024):.1f} MB)")
+        local_path = None
         try:
             platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
             if not platform:
@@ -636,18 +631,34 @@ class FileSyncPlugin(Star):
             temp_dir.mkdir(exist_ok=True)
             local_path = temp_dir / file_name
 
+            # 流式下载文件（支持大文件）
             logger.debug(f"正在下载文件到本地: {local_path}")
-            async with httpx.AsyncClient() as http_client:
-                response = await http_client.get(file_url)
-                response.raise_for_status()
-                await asyncio.to_thread(self._write_file, local_path, response.content)
-            logger.debug(f"文件下载完成，大小: {len(response.content)} 字节")
+            downloaded_size = 0
+            start_time = time.time()
+
+            # 根据文件大小动态调整下载超时
+            download_timeout = max(600, file_size // (1024 * 1024) * 15)  # 至少 10 分钟，每 MB 增加 15 秒
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout=download_timeout)) as http_client:
+                async with http_client.stream("GET", file_url) as response:
+                    response.raise_for_status()
+                    with open(local_path, "wb") as f:
+                        async for chunk in response.aiter_bytes(chunk_size=65536):  # 64KB 块大小
+                            f.write(chunk)
+                            downloaded_size += len(chunk)
+                            # 每 50MB 输出一次进度
+                            if downloaded_size % (50 * 1024 * 1024) == 0:
+                                elapsed = time.time() - start_time
+                                speed = downloaded_size / elapsed / 1024 / 1024 if elapsed > 0 else 0
+                                progress = (downloaded_size / file_size) * 100 if file_size > 0 else 0
+                                logger.debug(f"下载进度: {progress:.1f}%, 已下载: {downloaded_size / (1024*1024):.1f} MB, 速度: {speed:.2f} MB/s")
+
+            elapsed = time.time() - start_time
+            speed = downloaded_size / elapsed / 1024 / 1024 if elapsed > 0 else 0
+            logger.info(f"文件下载完成，大小: {downloaded_size / (1024*1024):.1f} MB, 耗时: {elapsed:.1f}秒, 速度: {speed:.2f} MB/s")
 
             remote_path = f"{target_path}/{file_name}"
-            logger.debug(f"正在上传文件到NextCloud: {remote_path}")
-            upload_success = await asyncio.to_thread(self.cloud_sync.upload_file, str(local_path), remote_path)
-
-            local_path.unlink(missing_ok=True)
+            logger.info(f"正在上传文件到NextCloud: {remote_path}")
+            upload_success = await asyncio.to_thread(self.cloud_sync.upload_file, str(local_path), remote_path, file_size)
 
             if upload_success:
                 logger.info(f"文件同步成功: {file_name}")
@@ -665,6 +676,14 @@ class FileSyncPlugin(Star):
         except Exception as e:
             logger.error(f"同步文件失败 {file_name}: {e}", exc_info=True)
             return False
+        finally:
+            # 确保删除本地临时文件
+            if local_path and local_path.exists():
+                try:
+                    local_path.unlink()
+                    logger.debug(f"已删除临时文件: {local_path}")
+                except Exception as e:
+                    logger.warning(f"删除临时文件失败 {local_path}: {e}")
 
     async def _notify_retry_failed(self, item: dict):
         """通知用户文件重试同步失败"""
