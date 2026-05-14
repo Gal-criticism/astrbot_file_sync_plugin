@@ -38,8 +38,14 @@
     "sync_interval_minutes": {
         "description": "同步间隔(分钟)",
         "type": "int",
-        "hint": "定时同步的间隔时间，单位分钟",
+        "hint": "定时同步的间隔时间，单位分钟，仅在未设置sync_time_points时生效",
         "default": 1440
+    },
+    "sync_time_points": {
+        "description": "同步时间点",
+        "type": "list",
+        "hint": "指定每天执行同步的时间点，格式：[\"08:00\", \"12:00\", \"18:00\"]，设置后将忽略sync_interval_minutes",
+        "default": []
     },
     "file_type_whitelist": {
         "description": "允许的文件类型",

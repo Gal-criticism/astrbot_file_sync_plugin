@@ -187,7 +187,10 @@ class FileSyncPlugin(Star):
     async def _sync_loop(self):
         """定时同步循环"""
         logger.info("========== 定时同步循环启动 ==========")
-        logger.info(f"同步间隔: {self.config.sync_interval_minutes} 分钟")
+        if self.config.has_time_points():
+            logger.info(f"同步模式: 时间点模式，时间点: {self.config.sync_time_points}")
+        else:
+            logger.info(f"同步模式: 间隔模式，间隔: {self.config.sync_interval_minutes} 分钟")
         loop_count = 0
 
         while self._running:
@@ -200,8 +203,11 @@ class FileSyncPlugin(Star):
                 logger.error(f"❌ 定时同步任务执行失败: {e}", exc_info=True)
 
             if self._running:
-                wait_seconds = self.config.sync_interval_minutes * 60
-                logger.info(f"等待 {self.config.sync_interval_minutes} 分钟后进行下次同步")
+                from datetime import datetime
+                now = datetime.now(CN_TZ)
+                wait_seconds = self.config.get_next_delay_seconds(now)
+                wait_minutes = wait_seconds / 60
+                logger.info(f"等待 {wait_minutes:.1f} 分钟后进行下次同步")
                 await asyncio.sleep(wait_seconds)
 
         logger.info("========== 定时同步循环已停止 ==========")

@@ -1,5 +1,6 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from typing import List, Optional
+from datetime import datetime
 
 class FileSyncConfig(BaseModel):
     """插件配置模型"""
@@ -9,13 +10,63 @@ class FileSyncConfig(BaseModel):
     enabled_groups: List[str] = Field(default_factory=list, description="启用的群号列表")
     base_path: str = Field(default="/QQ群文件", description="云盘基础路径")
     path_template: str = Field(default="{group_name}_{group_id}/{file_type}", description="文件夹路径模板")
-    sync_interval_minutes: int = Field(default=5, ge=1, description="同步间隔(分钟)")
+    sync_interval_minutes: int = Field(default=1440, ge=1, description="同步间隔(分钟)")
+    sync_time_points: List[str] = Field(default_factory=list, description="同步时间点，格式: ['08:00', '12:00']")
     file_type_whitelist: List[str] = Field(default_factory=lambda: ["*"], description="允许的文件类型")
     notify_on_success: bool = Field(default=False, description="成功时通知")
     notify_on_error: bool = Field(default=True, description="失败时通知")
     retry_queue_enabled: bool = Field(default=True, description="启用重试队列")
     retry_max_attempts: int = Field(default=3, ge=1, description="最大重试次数")
     retry_delay_seconds: int = Field(default=300, ge=60, description="重试间隔(秒)")
+
+    @validator("sync_time_points", pre=True)
+    def validate_sync_time_points(cls, v):
+        """验证时间点格式"""
+        if not v:
+            return v
+        validated = []
+        for tp in v:
+            try:
+                # 支持 HH:MM 格式
+                datetime.strptime(tp, "%H:%M")
+                validated.append(tp)
+            except ValueError:
+                pass  # 忽略无效格式
+        return validated
+
+    def has_time_points(self) -> bool:
+        """是否配置了时间点"""
+        return len(self.sync_time_points) > 0
+
+    def get_next_delay_seconds(self, now: datetime) -> int:
+        """计算距离下次同步的秒数
+        如果配置了时间点，返回距离最近时间点的秒数
+        否则返回 sync_interval_minutes * 60
+        """
+        if not self.has_time_points():
+            return self.sync_interval_minutes * 60
+
+        current_time = now.strftime("%H:%M")
+        current_minutes = now.hour * 60 + now.minute
+
+        # 找到今天剩余的时间点
+        min_delta = None
+        for tp in self.sync_time_points:
+            h, m = map(int, tp.split(":"))
+            target_minutes = h * 60 + m
+            delta = target_minutes - current_minutes
+            if delta > 0:
+                if min_delta is None or delta < min_delta:
+                    min_delta = delta
+
+        # 如果今天没有剩余时间点，计算到明天第一个时间点
+        if min_delta is None:
+            first_tp = self.sync_time_points[0]
+            h, m = map(int, first_tp.split(":"))
+            target_minutes = h * 60 + m
+            min_delta = (24 * 60 - current_minutes) + target_minutes
+
+        return min_delta * 60
 
     def is_file_type_allowed(self, filename: str) -> bool:
         """检查文件类型是否允许"""
