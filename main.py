@@ -724,8 +724,11 @@ class FileSyncPlugin(Star):
                 try:
                     print(f"[SYNC-THREAD-DEBUG] 调用 self.cloud_sync.upload_file...", flush=True)
                     logger.info(f"[SYNC-THREAD] 调用 self.cloud_sync.upload_file...")
+
+                    # 直接调用 upload_file 方法
+                    print(f"[SYNC-THREAD-DEBUG] 开始执行 upload_file 方法...", flush=True)
                     result = self.cloud_sync.upload_file(str(local_path), remote_path, file_size)
-                    print(f"[SYNC-THREAD-DEBUG] upload_file 返回: {result}", flush=True)
+                    print(f"[SYNC-THREAD-DEBUG] upload_file 方法执行完成，返回: {result}", flush=True)
                     logger.info(f"[SYNC-THREAD] upload_file 返回: {result}")
                     return result
                 except Exception as e:
