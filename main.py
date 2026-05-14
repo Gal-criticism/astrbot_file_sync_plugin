@@ -623,39 +623,64 @@ class FileSyncPlugin(Star):
                     logger.warning(f"API {api_name} 失败: {e}")
                     continue
             if not file_url:
-                logger.error(f"无法获取文件下载链接: {file_name}")
+                logger.error(f"[DOWNLOAD] 无法获取文件下载链接: {file_name}")
                 return False
 
-            logger.debug(f"文件下载链接: {file_url[:50]}...")
+            logger.info(f"[DOWNLOAD] 文件下载链接: {file_url[:100]}...")
 
             temp_dir = Path(tempfile.gettempdir()) / "file_sync"
             temp_dir.mkdir(exist_ok=True)
             local_path = temp_dir / file_name
 
             # 流式下载文件（支持大文件）
-            logger.debug(f"正在下载文件到本地: {local_path}")
+            logger.info(f"[DOWNLOAD] 开始下载文件到本地: {local_path}")
+            logger.info(f"[DOWNLOAD] 预期文件大小: {file_size} 字节 ({file_size / (1024*1024):.2f} MB)")
             downloaded_size = 0
             start_time = time.time()
 
             # 根据文件大小动态调整下载超时
             download_timeout = max(600, file_size // (1024 * 1024) * 15)  # 至少 10 分钟，每 MB 增加 15 秒
-            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout=download_timeout)) as http_client:
-                async with http_client.stream("GET", file_url) as response:
-                    response.raise_for_status()
-                    with open(local_path, "wb") as f:
-                        async for chunk in response.aiter_bytes(chunk_size=65536):  # 64KB 块大小
-                            f.write(chunk)
-                            downloaded_size += len(chunk)
-                            # 每 50MB 输出一次进度
-                            if downloaded_size % (50 * 1024 * 1024) == 0:
-                                elapsed = time.time() - start_time
-                                speed = downloaded_size / elapsed / 1024 / 1024 if elapsed > 0 else 0
-                                progress = (downloaded_size / file_size) * 100 if file_size > 0 else 0
-                                logger.debug(f"下载进度: {progress:.1f}%, 已下载: {downloaded_size / (1024*1024):.1f} MB, 速度: {speed:.2f} MB/s")
+            logger.info(f"[DOWNLOAD] 下载超时设置: {download_timeout} 秒")
+
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(timeout=download_timeout)) as http_client:
+                    async with http_client.stream("GET", file_url) as response:
+                        logger.info(f"[DOWNLOAD] 响应状态码: {response.status_code}")
+                        logger.debug(f"[DOWNLOAD] 响应头: {dict(response.headers)}")
+                        response.raise_for_status()
+                        with open(local_path, "wb") as f:
+                            async for chunk in response.aiter_bytes(chunk_size=65536):  # 64KB 块大小
+                                f.write(chunk)
+                                downloaded_size += len(chunk)
+                                # 每 10MB 输出一次进度
+                                if downloaded_size % (10 * 1024 * 1024) == 0:
+                                    elapsed = time.time() - start_time
+                                    speed = downloaded_size / elapsed / 1024 / 1024 if elapsed > 0 else 0
+                                    progress = (downloaded_size / file_size) * 100 if file_size > 0 else 0
+                                    logger.info(f"[DOWNLOAD] 下载进度: {progress:.1f}%, 已下载: {downloaded_size / (1024*1024):.1f} MB, 速度: {speed:.2f} MB/s")
+            except httpx.HTTPStatusError as e:
+                logger.error(f"[DOWNLOAD] HTTP 状态错误: {e.response.status_code} {e.response.reason_phrase}")
+                logger.error(f"[DOWNLOAD] 响应内容: {e.response.text[:500]}")
+                return False
+            except httpx.HTTPError as e:
+                logger.error(f"[DOWNLOAD] HTTP 错误: {type(e).__name__}: {e}")
+                return False
 
             elapsed = time.time() - start_time
             speed = downloaded_size / elapsed / 1024 / 1024 if elapsed > 0 else 0
-            logger.info(f"文件下载完成，大小: {downloaded_size / (1024*1024):.1f} MB, 耗时: {elapsed:.1f}秒, 速度: {speed:.2f} MB/s")
+            logger.info(f"[DOWNLOAD] 文件下载完成")
+            logger.info(f"[DOWNLOAD] 下载大小: {downloaded_size} 字节 ({downloaded_size / (1024*1024):.2f} MB)")
+            logger.info(f"[DOWNLOAD] 耗时: {elapsed:.1f}秒, 速度: {speed:.2f} MB/s")
+
+            # 检查下载的文件是否完整
+            if local_path.exists():
+                actual_size = local_path.stat().st_size
+                logger.info(f"[DOWNLOAD] 本地文件实际大小: {actual_size} 字节 ({actual_size / (1024*1024):.2f} MB)")
+                if actual_size != file_size:
+                    logger.warning(f"[DOWNLOAD] 文件大小不匹配! 预期: {file_size}, 实际: {actual_size}")
+            else:
+                logger.error(f"[DOWNLOAD] 下载的文件不存在: {local_path}")
+                return False
 
             remote_path = f"{target_path}/{file_name}"
             logger.info(f"[SYNC] 准备上传文件到NextCloud: {remote_path}")
@@ -671,7 +696,22 @@ class FileSyncPlugin(Star):
             actual_size = local_path.stat().st_size
             logger.info(f"[SYNC] 本地文件实际大小: {actual_size} 字节 ({actual_size / (1024*1024):.2f} MB)")
 
-            upload_success = await asyncio.to_thread(self.cloud_sync.upload_file, str(local_path), remote_path, file_size)
+            # 检查 cloud_sync 是否初始化
+            if not self.cloud_sync:
+                logger.error(f"[SYNC] cloud_sync 未初始化!")
+                return False
+
+            logger.info(f"[SYNC] 开始调用 cloud_sync.upload_file...")
+            logger.info(f"[SYNC] 上传前检查 - 文件存在: {local_path.exists()}, 大小: {local_path.stat().st_size if local_path.exists() else 'N/A'}")
+            try:
+                upload_success = await asyncio.to_thread(self.cloud_sync.upload_file, str(local_path), remote_path, file_size)
+                logger.info(f"[SYNC] cloud_sync.upload_file 返回: {upload_success}")
+                logger.info(f"[SYNC] 上传后检查 - 文件存在: {local_path.exists()}, 大小: {local_path.stat().st_size if local_path.exists() else 'N/A'}")
+            except Exception as e:
+                logger.error(f"[SYNC] cloud_sync.upload_file 抛出异常: {type(e).__name__}: {e}")
+                logger.error(f"[SYNC] 异常详情:", exc_info=True)
+                logger.error(f"[SYNC] 异常时检查 - 文件存在: {local_path.exists()}")
+                return False
 
             if upload_success:
                 logger.info(f"[SYNC] 文件同步成功: {file_name}")
@@ -696,10 +736,14 @@ class FileSyncPlugin(Star):
             # 确保删除本地临时文件
             if local_path and local_path.exists():
                 try:
+                    file_size_before = local_path.stat().st_size
                     local_path.unlink()
-                    logger.debug(f"已删除临时文件: {local_path}")
+                    logger.info(f"[CLEANUP] 已删除临时文件: {local_path} (大小: {file_size_before} 字节)")
                 except Exception as e:
-                    logger.warning(f"删除临时文件失败 {local_path}: {e}")
+                    logger.warning(f"[CLEANUP] 删除临时文件失败 {local_path}: {e}")
+            else:
+                if local_path:
+                    logger.debug(f"[CLEANUP] 临时文件不存在，无需删除: {local_path}")
 
     async def _notify_retry_failed(self, item: dict):
         """通知用户文件重试同步失败"""

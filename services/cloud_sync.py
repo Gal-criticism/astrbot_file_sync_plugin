@@ -369,14 +369,19 @@ class CloudSyncService:
 
     def upload_file(self, local_path: str, remote_path: str, file_size: int = 0, max_retries: int = 3) -> bool:
         """上传文件到NextCloud（自动选择上传方式）"""
+        logger.info(f"[UPLOAD] upload_file 被调用")
+        logger.info(f"[UPLOAD] local_path: {local_path}")
+        logger.info(f"[UPLOAD] remote_path: {remote_path}")
+        logger.info(f"[UPLOAD] file_size: {file_size} 字节 ({file_size / (1024*1024):.2f} MB)")
+
         # 根据文件大小选择上传方式
         chunk_threshold = 100 * 1024 * 1024  # 100MB
 
         if file_size >= chunk_threshold:
-            logger.info(f"文件大于 {chunk_threshold / (1024*1024):.0f} MB，使用分块上传")
+            logger.info(f"[UPLOAD] 文件大于 {chunk_threshold / (1024*1024):.0f} MB，使用分块上传")
             return self.upload_file_chunked(local_path, remote_path, file_size, max_retries)
         else:
-            logger.info(f"文件小于 {chunk_threshold / (1024*1024):.0f} MB，使用直接上传")
+            logger.info(f"[UPLOAD] 文件小于 {chunk_threshold / (1024*1024):.0f} MB，使用直接上传")
             return self.upload_file_direct(local_path, remote_path, file_size, max_retries)
 
     def download_file(self, remote_path: str, local_path: str) -> bool:
