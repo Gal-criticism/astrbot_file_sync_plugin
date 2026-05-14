@@ -1,5 +1,4 @@
 import httpx
-import logging
 import time
 import json
 import os
@@ -8,8 +7,7 @@ from typing import Optional
 
 from ..config import FileSyncConfig
 from ..utils.rename import generate_unique_filename
-
-logger = logging.getLogger(__name__)
+from astrbot.api import AstrBotConfig, logger
 
 
 def _build_dav_url(nextcloud_url: str, username: str) -> str:
