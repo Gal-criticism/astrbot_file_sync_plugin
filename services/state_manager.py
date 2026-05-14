@@ -265,3 +265,27 @@ class StateManager:
             VALUES (?, ?)
         """, (group_id, sync_time.isoformat()))
         conn.commit()
+
+    def populate_from_remote_list(self, remote_files: List[dict], group_id: str):
+        """从 NextCloud 远程文件列表批量写入 SQLite，用于插件启动时预热查重数据
+
+        remote_files: list of dict，每项包含 file_name, file_size, remote_path
+        """
+        conn = self._get_conn()
+        now = datetime.now(CN_TZ).isoformat()
+        for item in remote_files:
+            # 用 remote_path 作为 file_id 的替代（远程路径唯一）
+            # 同时用 file_name + file_size + group_id 做去重（兼容本地查重逻辑）
+            conn.execute("""
+                INSERT OR IGNORE INTO sync_records
+                (file_id, file_name, file_size, group_id, target_path, sync_time)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                item["remote_path"],
+                item["file_name"],
+                item.get("file_size", 0),
+                group_id,
+                item["remote_path"],
+                now
+            ))
+        conn.commit()

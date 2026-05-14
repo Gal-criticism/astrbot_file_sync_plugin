@@ -3,7 +3,7 @@ import time
 import json
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from urllib.parse import quote
 
 from ..config import FileSyncConfig
@@ -110,6 +110,108 @@ class CloudSyncService:
     def file_exists(self, path: str) -> bool:
         """检查文件是否存在"""
         return self._path_exists(path)
+
+    def list_remote_files(self, remote_path: str) -> List[dict]:
+        """递归列出远程目录下所有层级的文件（用于插件启动时预热 SQLite 查重数据）
+
+        Returns:
+            List[dict]: 文件列表，每项包含 file_name, file_size, remote_path
+        """
+        if not remote_path.startswith("/"):
+            remote_path = "/" + remote_path
+
+        result = []
+        try:
+            url = f"{self._dav_url}{remote_path}"
+            logger.debug(f"列出远程文件: {url}")
+            with self._get_client() as client:
+                response = client.request("PROPFIND", url, headers={"Depth": "1"})
+                if response.status_code != 207:
+                    logger.warning(f"列出远程文件失败 {remote_path}: 状态码 {response.status_code}")
+                    return result
+
+                import re
+                content = response.text
+                entries = re.split(r'(?=<d:response>)', content)
+
+                subdirs = []
+                for entry in entries:
+                    if '<d:displayname>' not in entry:
+                        continue
+
+                    href_match = re.search(r'<d:href>([^<]+)</d:href>', entry)
+                    display_match = re.search(r'<d:displayname>([^<]+)</d:displayname>', entry)
+                    length_match = re.search(r'<d:getcontentlength>([^<]+)</d:getcontentlength>', entry)
+                    is_collection = '<d:collection>' in entry
+
+                    if not href_match or not display_match:
+                        continue
+
+                    href = href_match.group(1)
+                    display = display_match.group(1)
+
+                    # 跳过当前目录自身
+                    normalized_href = href.rstrip('/')
+                    normalized_remote = remote_path.rstrip('/')
+                    if normalized_href == normalized_remote or normalized_href == normalized_remote + '/':
+                        continue
+
+                    if is_collection:
+                        # 子目录：递归收集
+                        subdirs.append(href)
+                    else:
+                        # 文件：直接收集
+                        result.append({
+                            "file_name": display,
+                            "file_size": int(length_match.group(1)) if length_match else 0,
+                            "remote_path": href
+                        })
+
+                # 递归遍历子目录
+                for subdir_href in subdirs:
+                    # subdir_href 已经是完整路径（相对于 WebDAV root）
+                    sub_result = self.list_remote_files(subdir_href)
+                    result.extend(sub_result)
+
+        except Exception as e:
+            logger.error(f"列出远程文件异常 {remote_path}: {type(e).__name__}: {e}")
+        return result
+
+    def list_all_remote_dirs(self, base_path: str) -> List[str]:
+        """列出远程目录下所有子目录（不含文件，用于定位群文件夹路径）"""
+        if not base_path.startswith("/"):
+            base_path = "/" + base_path
+
+        dirs = []
+        try:
+            url = f"{self._dav_url}{base_path}"
+            with self._get_client() as client:
+                response = client.request("PROPFIND", url, headers={"Depth": "1"})
+                if response.status_code != 207:
+                    return dirs
+
+                import re
+                content = response.text
+                entries = re.split(r'(?=<d:response>)', content)
+                for entry in entries:
+                    if '<d:collection>' not in entry and '<d:displayname>' not in entry:
+                        continue
+                    href_match = re.search(r'<d:href>([^<]+)</d:href>', entry)
+                    display_match = re.search(r'<d:displayname>(([^<])+)</d:displayname>', entry)
+                    if href_match and display_match:
+                        href = href_match.group(1)
+                        name = display_match.group(1)
+                        # 跳过当前目录
+                        if href.rstrip('/') == base_path.rstrip('/'):
+                            continue
+                        # 只取子目录（href 以 base_path/ 开头）
+                        normalized_href = href.rstrip('/')
+                        normalized_base = base_path.rstrip('/')
+                        if normalized_href.startswith(normalized_base + '/') and '/' not in normalized_href[len(normalized_base) + 1:]:
+                            dirs.append(href.rstrip('/'))
+        except Exception as e:
+            logger.error(f"列出子目录异常 {base_path}: {type(e).__name__}: {e}")
+        return dirs
 
     def _get_progress_file_path(self, local_path: str, remote_path: str) -> Path:
         """获取上传进度文件路径"""

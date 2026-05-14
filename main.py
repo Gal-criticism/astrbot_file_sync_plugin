@@ -161,6 +161,27 @@ class FileSyncPlugin(Star):
         logger.info(f"云同步服务状态: {self.cloud_sync is not None}")
         logger.info(f"定时任务状态: {self._sync_task is not None}")
 
+        # 预热：插件启动时从 NextCloud 远程文件列表填充 SQLite 查重数据
+        if self.config and self.config.enabled_groups and self.cloud_sync and self.state_manager:
+            logger.info("开始预热 SQLite 查重数据...")
+            warmed_groups = 0
+            for group_id in self.config.enabled_groups:
+                try:
+                    group_name_raw, _ = await self.get_group_info(group_id)
+                    group_base_path = self.config.generate_target_path(group_name_raw, group_id, "")
+                    files_on_cloud = self.cloud_sync.list_remote_files(group_base_path)
+                    if files_on_cloud:
+                        self.state_manager.populate_from_remote_list(files_on_cloud, group_id)
+                        logger.info(f"群 {group_id} 预热完成，写入 {len(files_on_cloud)} 条文件记录")
+                        warmed_groups += 1
+                    else:
+                        logger.info(f"群 {group_id} 远程目录无文件，预热跳过")
+                except Exception as e:
+                    logger.warning(f"群 {group_id} 预热失败: {e}")
+            logger.info(f"查重数据预热完成，共处理 {warmed_groups} 个群")
+        else:
+            logger.info("跳过预热：配置或服务未就绪")
+
     async def terminate(self):
         """插件卸载时调用"""
         logger.info("================================================================")
