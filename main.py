@@ -168,7 +168,8 @@ class FileSyncPlugin(Star):
             for group_id in self.config.enabled_groups:
                 try:
                     group_name_raw, _ = await self.get_group_info(group_id)
-                    group_base_path = self.config.generate_target_path(group_name_raw, group_id, "")
+                    group_safe_name = group_name_raw.replace(" ", "_")
+                    group_base_path = f"{self.config.base_path}/{group_safe_name}_{group_id}"
                     files_on_cloud = self.cloud_sync.list_remote_files(group_base_path)
                     if files_on_cloud:
                         self.state_manager.populate_from_remote_list(files_on_cloud, group_id)

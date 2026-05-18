@@ -35,6 +35,9 @@ class CloudSyncService:
         self._password = config.nextcloud_password
         self._upload_progress_dir = Path("upload_progress")
         self._upload_progress_dir.mkdir(exist_ok=True)
+        # 提取 DAV 路径前缀，用于 PROPFIND 响应的 href 截取相对路径
+        from urllib.parse import urlparse
+        self._dav_path = urlparse(self._dav_url).path.rstrip('/')
         logger.info(f"NextCloud WebDAV URL: {self._dav_url}")
         self._test_connection()
 
@@ -142,7 +145,7 @@ class CloudSyncService:
                     href_match = re.search(r'<d:href>([^<]+)</d:href>', entry)
                     display_match = re.search(r'<d:displayname>([^<]+)</d:displayname>', entry)
                     length_match = re.search(r'<d:getcontentlength>([^<]+)</d:getcontentlength>', entry)
-                    is_collection = '<d:collection>' in entry
+                    is_collection = '<d:collection' in entry
 
                     if not href_match or not display_match:
                         continue
@@ -150,27 +153,25 @@ class CloudSyncService:
                     href = href_match.group(1)
                     display = display_match.group(1)
 
-                    # 跳过当前目录自身
-                    normalized_href = href.rstrip('/')
-                    normalized_remote = remote_path.rstrip('/')
-                    if normalized_href == normalized_remote or normalized_href == normalized_remote + '/':
+                    # 跳过当前目录自身：href 去掉 _dav_path 前缀后和 remote_path 相同
+                    relative = href.rstrip('/')
+                    if relative.startswith(self._dav_path):
+                        relative = relative[len(self._dav_path):] or '/'
+                    if relative.rstrip('/') == remote_path.rstrip('/'):
                         continue
 
                     if is_collection:
-                        # 子目录：递归收集
-                        subdirs.append(href)
+                        subdirs.append(relative.rstrip('/'))
                     else:
-                        # 文件：直接收集
                         result.append({
                             "file_name": display,
                             "file_size": int(length_match.group(1)) if length_match else 0,
                             "remote_path": href
                         })
 
-                # 递归遍历子目录
-                for subdir_href in subdirs:
-                    # subdir_href 已经是完整路径（相对于 WebDAV root）
-                    sub_result = self.list_remote_files(subdir_href)
+                # 递归遍历子目录，用相对路径
+                for subdir_rel in subdirs:
+                    sub_result = self.list_remote_files(subdir_rel)
                     result.extend(sub_result)
 
         except Exception as e:
@@ -194,7 +195,7 @@ class CloudSyncService:
                 content = response.text
                 entries = re.split(r'(?=<d:response>)', content)
                 for entry in entries:
-                    if '<d:collection>' not in entry and '<d:displayname>' not in entry:
+                    if '<d:collection' not in entry and '<d:displayname>' not in entry:
                         continue
                     href_match = re.search(r'<d:href>([^<]+)</d:href>', entry)
                     display_match = re.search(r'<d:displayname>(([^<])+)</d:displayname>', entry)
