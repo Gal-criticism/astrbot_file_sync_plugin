@@ -114,6 +114,13 @@ class CloudSyncService:
         """检查文件是否存在"""
         return self._path_exists(path)
 
+    def _extract_name_from_href(self, href: str) -> str:
+        """从 href 路径末尾提取文件名/目录名，并做 URL 解码"""
+        from urllib.parse import unquote
+        path = href.rstrip('/')
+        name = path.rsplit('/', 1)[-1] if '/' in path else path
+        return unquote(name)
+
     def list_remote_files(self, remote_path: str) -> List[dict]:
         """递归列出远程目录下所有层级的文件（用于插件启动时预热 SQLite 查重数据）
 
@@ -139,19 +146,13 @@ class CloudSyncService:
 
                 subdirs = []
                 for entry in entries:
-                    if '<d:displayname>' not in entry:
-                        continue
-
                     href_match = re.search(r'<d:href>([^<]+)</d:href>', entry)
-                    display_match = re.search(r'<d:displayname>([^<]+)</d:displayname>', entry)
-                    length_match = re.search(r'<d:getcontentlength>([^<]+)</d:getcontentlength>', entry)
-                    is_collection = '<d:collection' in entry
-
-                    if not href_match or not display_match:
+                    if not href_match:
                         continue
 
                     href = href_match.group(1)
-                    display = display_match.group(1)
+                    length_match = re.search(r'<d:getcontentlength>([^<]+)</d:getcontentlength>', entry)
+                    is_collection = '<d:collection' in entry
 
                     # 跳过当前目录自身：href 去掉 _dav_path 前缀后和 remote_path 相同
                     relative = href.rstrip('/')
@@ -160,11 +161,15 @@ class CloudSyncService:
                     if relative.rstrip('/') == remote_path.rstrip('/'):
                         continue
 
+                    file_name = self._extract_name_from_href(href)
+                    if not file_name:
+                        continue
+
                     if is_collection:
                         subdirs.append(relative.rstrip('/'))
                     else:
                         result.append({
-                            "file_name": display,
+                            "file_name": file_name,
                             "file_size": int(length_match.group(1)) if length_match else 0,
                             "remote_path": href
                         })
@@ -195,17 +200,15 @@ class CloudSyncService:
                 content = response.text
                 entries = re.split(r'(?=<d:response>)', content)
                 for entry in entries:
-                    if '<d:collection' not in entry and '<d:displayname>' not in entry:
+                    if '<d:collection' not in entry:
                         continue
                     href_match = re.search(r'<d:href>([^<]+)</d:href>', entry)
-                    display_match = re.search(r'<d:displayname>(([^<])+)</d:displayname>', entry)
-                    if href_match and display_match:
+                    if href_match:
                         href = href_match.group(1)
-                        name = display_match.group(1)
                         # 跳过当前目录
                         if href.rstrip('/') == base_path.rstrip('/'):
                             continue
-                        # 只取子目录（href 以 base_path/ 开头）
+                        # 只取直接子目录（href 以 base_path/ 开头，且无更多层级）
                         normalized_href = href.rstrip('/')
                         normalized_base = base_path.rstrip('/')
                         if normalized_href.startswith(normalized_base + '/') and '/' not in normalized_href[len(normalized_base) + 1:]:
