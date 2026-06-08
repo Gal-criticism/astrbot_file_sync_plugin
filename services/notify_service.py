@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List, Any
 
 class NotifyService:
     """通知服务 - 发送@提醒消息"""
@@ -47,36 +47,36 @@ class NotifyService:
 
         return message
 
-    def build_message_chain(self, result, categories_str: str = "") -> list:
+    def build_message_chain(self, result, categories_str: str = "") -> List[Any]:
         """
         构建消息链（包含 @ 组件）
-
-        注意：这里不直接使用 Comp.At，因为测试环境可能没有 astrbot
-        返回格式化的文本消息和组件类型信息供外部使用
 
         Args:
             result: FileValidationResult 验证结果
             categories_str: 分类列表字符串
 
         Returns:
-            dict: 包含 'type' 和 'data' 的消息链
+            List[BaseMessageComponent]: 消息组件列表
         """
         text = self.format_message(result, categories_str)
 
-        # 如果模板以 @ 开头，拆分为 At + 文本
-        if text.startswith("@"):
-            parts = text.split(" ", 1)
-            at_name = parts[0][1:]  # 去掉 @
-            remaining_text = parts[1] if len(parts) > 1 else ""
+        # 尝试导入 AstrBot 组件
+        try:
+            import astrbot.api.message_components as Comp
 
-            return {
-                "type": "chain",
-                "at_qq": result.sender_id,
-                "at_name": at_name,
-                "text": remaining_text
-            }
-        else:
-            return {
-                "type": "text",
-                "text": text
-            }
+            # 如果模板以 @ 开头，拆分为 At + 文本
+            if text.startswith("@"):
+                parts = text.split(" ", 1)
+                at_name = parts[0][1:]  # 去掉 @
+                remaining_text = parts[1] if len(parts) > 1 else ""
+
+                chain = [Comp.At(qq=result.sender_id)]
+                if remaining_text:
+                    chain.append(Comp.Plain(text=remaining_text))
+                return chain
+            else:
+                return [Comp.Plain(text=text)]
+
+        except ImportError:
+            # 如果无法导入 AstrBot 组件，返回纯文本消息
+            return [text]

@@ -74,11 +74,11 @@ def test_notification_message_chain():
     notify = NotifyService()
     chain = notify.build_message_chain(result, "素材、成品")
 
-    # 应该包含 At 和 Plain 组件信息
-    assert "type" in chain
-    if chain["type"] == "chain":
-        assert chain["at_qq"] == "123456"
-        assert "text" in chain
+    # 返回的是组件列表（当 AstrBot 不可用时是字符串列表）
+    assert isinstance(chain, list)
+    if chain and isinstance(chain[0], str):
+        # 当 AstrBot 不可用时，返回文本
+        assert "测试用户" in chain[0] or "123456" in chain[0]
 
 def test_multiple_separators():
     """多个 -- 分隔符，只取第一个分类"""
