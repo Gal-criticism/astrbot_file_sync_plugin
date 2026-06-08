@@ -29,9 +29,9 @@ class FileSyncConfig(BaseModel):
         default="{category}--{name}",
         description="文件名模板格式"
     )
-    filename_categories: dict = Field(
-        default_factory=dict,
-        description="分类白名单（分组），可选，留空则只检查格式"
+    filename_categories: str = Field(
+        default="{}",
+        description="分类白名单（分组），JSON格式字符串，如 {\"设计类\": [\"素材\", \"成品\"]}"
     )
     filename_notify_template: Optional[str] = Field(
         default=None,
@@ -52,6 +52,20 @@ class FileSyncConfig(BaseModel):
             except ValueError:
                 pass  # 忽略无效格式
         return validated
+
+    def get_filename_categories(self) -> dict:
+        """获取解析后的分类白名单"""
+        import json
+        raw = self.filename_categories
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return {}
 
     def has_time_points(self) -> bool:
         """是否配置了时间点"""

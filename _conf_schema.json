@@ -104,9 +104,9 @@
     },
     "filename_categories": {
         "description": "分类白名单（分组）",
-        "type": "dict",
-        "default": {},
-        "hint": "分组管理允许的分类，如 {\"设计类\": [\"素材\", \"成品\"]}，留空则只检查格式不限制分类"
+        "type": "string",
+        "default": "{}",
+        "hint": "JSON格式的分类白名单，如 {\"设计类\": [\"素材\", \"成品\"]}，留空或 {} 则只检查格式不限制分类"
     },
     "filename_notify_template": {
         "description": "@提醒模板",

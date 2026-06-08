@@ -154,7 +154,7 @@ class FileSyncPlugin(Star):
                 from .services.notify_service import NotifyService
                 self.filename_checker = FilenameChecker(
                     template=self.config.filename_template,
-                    categories=self.config.filename_categories or {}
+                    categories=self.config.get_filename_categories()
                 )
                 self.notify_service = NotifyService(
                     template=self.config.filename_notify_template
