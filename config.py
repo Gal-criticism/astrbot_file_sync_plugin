@@ -19,6 +19,24 @@ class FileSyncConfig(BaseModel):
     retry_max_attempts: int = Field(default=3, ge=1, description="最大重试次数")
     retry_delay_seconds: int = Field(default=300, ge=60, description="重试间隔(秒)")
 
+    # 文件名检查相关配置
+    filename_check_enabled: bool = Field(
+        default=False,
+        description="是否启用文件名检查"
+    )
+    filename_template: str = Field(
+        default="{category}--{name}",
+        description="文件名模板格式"
+    )
+    filename_categories: dict = Field(
+        default_factory=dict,
+        description="分类白名单（分组），可选，留空则只检查格式"
+    )
+    filename_notify_template: Optional[str] = Field(
+        default=None,
+        description="@提醒模板"
+    )
+
     @validator("sync_time_points", pre=True)
     def validate_sync_time_points(cls, v):
         """验证时间点格式"""

@@ -82,5 +82,29 @@
         "type": "int",
         "hint": "两次重试之间的等待时间（秒）",
         "default": 300
+    },
+    "filename_check_enabled": {
+        "description": "是否启用文件名检查",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后将对上传的文件名进行格式检查，不合规将@提醒上传者"
+    },
+    "filename_template": {
+        "description": "文件名模板格式",
+        "type": "string",
+        "default": "{category}--{name}",
+        "hint": "文件名格式模板，如 {category}--{name}，检查是否包含 -- 分隔符"
+    },
+    "filename_categories": {
+        "description": "分类白名单（分组）",
+        "type": "dict",
+        "default": {},
+        "hint": "分组管理允许的分类，如 {\"设计类\": [\"素材\", \"成品\"]}，留空则只检查格式不限制分类"
+    },
+    "filename_notify_template": {
+        "description": "@提醒模板",
+        "type": "string",
+        "default": "@{sender} 你上传的文件「{filename}」格式不规范\\n原因：{error_reason}\\n正确格式：{template}\\n可用分类：{categories}",
+        "hint": "支持占位符：{sender}、{sender_id}、{filename}、{error_reason}、{template}、{categories}"
     }
 }
