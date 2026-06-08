@@ -911,13 +911,24 @@ class FileSyncPlugin(Star):
         logger.info("========== 收到群消息，检测文件上传 ==========")
         logger.info(f"消息来源: 群 {event.get_group_id()}, 发送者: {event.get_sender_name()}({event.get_sender_id()})")
 
+        # 检查配置状态
+        logger.info(f"self.config = {self.config is not None}")
+        if self.config:
+            logger.info(f"filename_check_enabled = {self.config.filename_check_enabled}")
+            logger.info(f"filename_checker = {self.filename_checker is not None}")
+            logger.info(f"notify_service = {self.notify_service is not None}")
+
         # 检查是否启用文件名检查
-        if not self.config or not self.config.filename_check_enabled:
-            logger.debug("文件名检查未启用，跳过")
+        if not self.config:
+            logger.warning("配置为空，跳过文件名检查")
+            return
+
+        if not self.config.filename_check_enabled:
+            logger.info("文件名检查未启用，跳过")
             return
 
         if not self.filename_checker or not self.notify_service:
-            logger.debug("文件名检查器或通知服务未初始化，跳过")
+            logger.warning("文件名检查器或通知服务未初始化，跳过")
             return
 
         logger.info(f"文件名检查已启用，模板: {self.config.filename_template}")
