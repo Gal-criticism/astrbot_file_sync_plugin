@@ -1,4 +1,11 @@
 {
+    "sync_enabled": {
+        "description": "是否启用文件同步功能",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后将禁用定时同步和手动同步命令，但仍保留文件名检查功能",
+        "obvious_hint": true
+    },
     "nextcloud_url": {
         "description": "NextCloud WebDAV地址",
         "type": "string",

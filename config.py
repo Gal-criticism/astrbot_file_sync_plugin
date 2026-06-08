@@ -4,6 +4,7 @@ from datetime import datetime
 
 class FileSyncConfig(BaseModel):
     """插件配置模型"""
+    sync_enabled: bool = Field(default=True, description="是否启用文件同步功能")
     nextcloud_url: str = Field(..., description="NextCloud WebDAV地址")
     nextcloud_username: str = Field(..., description="NextCloud用户名")
     nextcloud_password: str = Field(..., description="NextCloud应用密码")

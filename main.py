@@ -164,9 +164,15 @@ class FileSyncPlugin(Star):
                 logger.info("文件名检查未启用")
 
             self._running = True
-            logger.info("✓ 启动定时同步任务...")
-            self._sync_task = asyncio.create_task(self._sync_loop())
-            logger.info(f"✓ 定时同步任务已启动，间隔: {self.config.sync_interval_minutes}分钟")
+
+            # 根据配置决定是否启动同步功能
+            if self.config.sync_enabled:
+                logger.info("✓ 同步功能已启用，启动定时同步任务...")
+                self._sync_task = asyncio.create_task(self._sync_loop())
+                logger.info(f"✓ 定时同步任务已启动，间隔: {self.config.sync_interval_minutes}分钟")
+            else:
+                logger.info("⚠ 同步功能已禁用（sync_enabled=false），跳过定时同步任务")
+                self._sync_task = None
 
         except Exception as e:
             logger.error(f"❌ 初始化插件时发生异常: {e}", exc_info=True)
@@ -265,6 +271,12 @@ class FileSyncPlugin(Star):
         logger.info(f"当前配置状态: {self.config is not None}")
         logger.info(f"当前状态管理器: {self.state_manager is not None}")
         logger.info(f"当前云同步服务: {self.cloud_sync is not None}")
+
+        # 检查同步功能是否启用
+        if self.config and not self.config.sync_enabled:
+            logger.info("同步功能已禁用，手动同步被拒绝")
+            yield event.plain_result("同步功能已禁用，请在配置中启用 sync_enabled")
+            return
 
         yield event.plain_result("开始同步...")
         synced_count = await self.sync_all_groups()
@@ -419,6 +431,10 @@ class FileSyncPlugin(Star):
 
         if not self.config:
             logger.error("配置未初始化，跳过同步")
+            return 0
+
+        if not self.config.sync_enabled:
+            logger.info("同步功能已禁用（sync_enabled=false），跳过同步")
             return 0
 
         if not self.config.enabled_groups:
