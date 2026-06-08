@@ -71,6 +71,8 @@ class FileSyncPlugin(Star):
         self.config: Optional[FileSyncConfig] = None
         self.state_manager: Optional[StateManager] = None
         self.cloud_sync: Optional[CloudSyncService] = None
+        self.filename_checker = None
+        self.notify_service = None
         self._sync_task: Optional[asyncio.Task] = None
         self._running = False
 
@@ -141,6 +143,25 @@ class FileSyncPlugin(Star):
             logger.info("✓ 初始化云同步服务...")
             self.cloud_sync = CloudSyncService(self.config)
             logger.info("✓ 云同步服务初始化完成")
+
+            # 文件名检查相关
+            self.filename_checker = None
+            self.notify_service = None
+
+            # 初始化文件名检查器（如果启用）
+            if self.config.filename_check_enabled:
+                from .services.filename_checker import FilenameChecker
+                from .services.notify_service import NotifyService
+                self.filename_checker = FilenameChecker(
+                    template=self.config.filename_template,
+                    categories=self.config.filename_categories or {}
+                )
+                self.notify_service = NotifyService(
+                    template=self.config.filename_notify_template
+                )
+                logger.info(f"✓ 文件名检查器已启用，模板: {self.config.filename_template}")
+            else:
+                logger.info("文件名检查未启用")
 
             self._running = True
             logger.info("✓ 启动定时同步任务...")
@@ -865,3 +886,58 @@ class FileSyncPlugin(Star):
                 self.state_manager.add_sync_record(record)
             else:
                 logger.warning(f"重试失败: {item['file_name']}")
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def on_group_file_upload(self, event: AstrMessageEvent):
+        """
+        监听群文件上传消息，检测文件名是否合规
+        """
+        # 检查是否启用文件名检查
+        if not self.config or not self.config.filename_check_enabled:
+            return
+
+        if not self.filename_checker or not self.notify_service:
+            return
+
+        # 检查消息中是否包含 File 组件
+        import astrbot.api.message_components as Comp
+        file_component = None
+        for seg in event.message_obj.message:
+            if isinstance(seg, Comp.File):
+                file_component = seg
+                break
+
+        if not file_component:
+            return
+
+        # 获取文件名（从 File 组件或 raw_message）
+        filename = getattr(file_component, 'name', None) or getattr(file_component, 'file', None)
+        if not filename:
+            # 尝试从 raw_message 获取
+            raw = event.message_obj.raw_message
+            if raw and isinstance(raw, dict):
+                file_data = raw.get('file', {})
+                if isinstance(file_data, dict):
+                    filename = file_data.get('name')
+                if not filename:
+                    filename = raw.get('filename')
+
+        if not filename:
+            logger.debug("无法获取文件名，跳过检查")
+            return
+
+        # 执行文件名检查
+        result = self.filename_checker.validate(
+            filename=filename,
+            sender_id=event.get_sender_id(),
+            sender_name=event.get_sender_name(),
+            group_id=event.get_group_id() or ""
+        )
+
+        logger.info(f"文件名检查结果: {filename} -> {'合规' if result.is_valid else '不合规: ' + (result.error_reason or '')}")
+
+        # 如果不合规，发送 @提醒
+        if not result.is_valid:
+            categories_str = self.filename_checker.format_categories()
+            chain = self.notify_service.build_message_chain(result, categories_str)
+            yield event.chain_result(chain)
