@@ -933,6 +933,15 @@ class FileSyncPlugin(Star):
 
         logger.info(f"文件名检查已启用，模板: {self.config.filename_template}")
 
+        # 检查群号是否在启用列表中
+        group_id = event.get_group_id()
+        if group_id:
+            enabled = self.config.enabled_groups
+            logger.info(f"检查群号 {group_id} 是否在启用列表: {enabled}")
+            if enabled and group_id not in enabled:
+                logger.info(f"群 {group_id} 不在启用列表中，跳过文件名检查")
+                return
+
         # 检查消息中是否包含 File 组件
         import astrbot.api.message_components as Comp
         file_component = None
