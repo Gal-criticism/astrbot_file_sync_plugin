@@ -55,5 +55,6 @@ def test_format_message_empty_categories():
         error_type="format_error",
         error_reason="缺少分隔符"
     )
+    # 现在 categories_str 为空时会返回 "无限制"
     message = service.format_message(result, categories_str="")
-    assert message.strip() == ""
+    assert "无限制" in message
