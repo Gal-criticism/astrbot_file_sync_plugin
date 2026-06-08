@@ -908,39 +908,65 @@ class FileSyncPlugin(Star):
         """
         监听群文件上传消息，检测文件名是否合规
         """
+        logger.info("========== 收到群消息，检测文件上传 ==========")
+        logger.info(f"消息来源: 群 {event.get_group_id()}, 发送者: {event.get_sender_name()}({event.get_sender_id()})")
+
         # 检查是否启用文件名检查
         if not self.config or not self.config.filename_check_enabled:
+            logger.debug("文件名检查未启用，跳过")
             return
 
         if not self.filename_checker or not self.notify_service:
+            logger.debug("文件名检查器或通知服务未初始化，跳过")
             return
+
+        logger.info(f"文件名检查已启用，模板: {self.config.filename_template}")
 
         # 检查消息中是否包含 File 组件
         import astrbot.api.message_components as Comp
         file_component = None
-        for seg in event.message_obj.message:
+        message_chain = event.message_obj.message
+        logger.info(f"消息链长度: {len(message_chain)}")
+
+        for i, seg in enumerate(message_chain):
+            seg_type = type(seg).__name__
+            logger.debug(f"  消息段[{i}]: {seg_type}")
             if isinstance(seg, Comp.File):
                 file_component = seg
+                logger.info(f"  找到 File 组件: {seg_type}")
+                # 打印 File 组件的属性
+                for attr in ['name', 'file', 'file_id', 'size']:
+                    val = getattr(seg, attr, None)
+                    if val:
+                        logger.debug(f"    File.{attr} = {val}")
                 break
 
         if not file_component:
+            logger.info("消息中不包含 File 组件，跳过文件检查")
             return
 
         # 获取文件名（从 File 组件或 raw_message）
         filename = getattr(file_component, 'name', None) or getattr(file_component, 'file', None)
+        logger.info(f"从 File 组件提取文件名: {filename}")
+
         if not filename:
             # 尝试从 raw_message 获取
             raw = event.message_obj.raw_message
+            logger.debug(f"尝试从 raw_message 获取文件名，raw_message 类型: {type(raw)}")
             if raw and isinstance(raw, dict):
                 file_data = raw.get('file', {})
                 if isinstance(file_data, dict):
                     filename = file_data.get('name')
+                    logger.debug(f"从 raw_message.file 获取: {filename}")
                 if not filename:
                     filename = raw.get('filename')
+                    logger.debug(f"从 raw_message 获取: {filename}")
 
         if not filename:
-            logger.debug("无法获取文件名，跳过检查")
+            logger.warning("无法获取文件名，跳过检查")
             return
+
+        logger.info(f"开始检查文件名: {filename}")
 
         # 执行文件名检查
         result = self.filename_checker.validate(
@@ -950,10 +976,22 @@ class FileSyncPlugin(Star):
             group_id=event.get_group_id() or ""
         )
 
-        logger.info(f"文件名检查结果: {filename} -> {'合规' if result.is_valid else '不合规: ' + (result.error_reason or '')}")
+        logger.info(f"文件名检查完成: {filename}")
+        logger.info(f"  - 是否合规: {result.is_valid}")
+        logger.info(f"  - 提取的分类: {result.category}")
+        if not result.is_valid:
+            logger.info(f"  - 错误类型: {result.error_type}")
+            logger.info(f"  - 错误原因: {result.error_reason}")
 
         # 如果不合规，发送 @提醒
         if not result.is_valid:
             categories_str = self.filename_checker.format_categories()
+            logger.info(f"准备发送 @提醒，可用分类: {categories_str or '无限制'}")
+
             chain = self.notify_service.build_message_chain(result, categories_str)
+            logger.info(f"消息链构建完成: {chain}")
+
             yield event.chain_result(chain)
+            logger.info("@提醒消息已发送")
+        else:
+            logger.info("文件名合规，无需提醒")
