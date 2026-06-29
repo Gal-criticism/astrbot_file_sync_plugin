@@ -127,5 +127,14 @@ class FileEventHandler:
             chain = self.notify_service.build_message_chain(result, categories_str)
             yield event.chain_result(chain)
             logger.info("@提醒消息已发送")
+        elif getattr(result, 'deprecated_separator', False):
+            # 合规但使用了旧格式 → 温和提醒迁移
+            if self.naming_validator:
+                categories_str = self.naming_validator.format_categories()
+            else:
+                categories_str = ""
+            chain = self.notify_service.build_message_chain(result, categories_str)
+            yield event.chain_result(chain)
+            logger.info("旧格式温和提醒已发送")
         else:
             logger.info("文件名合规，无需提醒")

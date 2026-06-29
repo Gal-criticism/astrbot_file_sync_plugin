@@ -1,7 +1,7 @@
 """文件名解析结果模型 - 基于新命名规范"""
 
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 
 @dataclass
@@ -25,11 +25,37 @@ class NamingResult:
     suffixes: List[str] = field(default_factory=list)   # 后缀列表（如 ["无字幕", "工程"]）
     extension: Optional[str] = None         # 文件扩展名（不含点）
     deprecated_separator: bool = False       # 是否使用了旧的 -- 分隔符
+
+    # ── 多错误收集 ──
+    errors: List[Dict[str, str]] = field(default_factory=list)
+    # 每项: {"type": "format_error|extension_mismatch|category_not_found|...",
+    #        "reason": "具体原因"}
+    #
+    # error_type / error_reason 保持为第一个错误的快捷访问
+
     error_type: Optional[str] = None
     error_reason: Optional[str] = None
+
+    # ── 修正建议 ──
+    suggested_fix: Optional[str] = None
+    # 根据用户原始文件名推导的修正示例
+
     sender_id: str = ""
     sender_name: str = ""
     group_id: str = ""
+
+    def __post_init__(self):
+        """从 errors 列表同步首个错误到快捷字段"""
+        if self.errors and not self.error_type:
+            self.error_type = self.errors[0]["type"]
+            self.error_reason = self.errors[0]["reason"]
+
+    def add_error(self, error_type: str, error_reason: str):
+        """添加一个错误"""
+        self.errors.append({"type": error_type, "reason": error_reason})
+        if not self.error_type:
+            self.error_type = error_type
+            self.error_reason = error_reason
 
     def to_legacy(self) -> "FileValidationResult":
         """兼容转换：转为旧版 FileValidationResult"""
