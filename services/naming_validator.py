@@ -44,13 +44,13 @@ STANDARD_CATEGORIES = ["封面", "成片", "素材", "音频", "字幕", "数据
 # 分类 → 允许的扩展名
 CATEGORY_EXTENSIONS: Dict[str, List[str]] = {
     "封面": ["png", "jpg", "jpeg", "psd"],
-    "成片": ["mp4"],
+    "成片": ["mp4", "zip", "rar", "7z"],  # 成片也包括工程压缩包
     "素材": ["png", "jpg", "jpeg", "psd", "mp4", "mov", "avi", "webm", "gif", "svg",
              "ai", "eps", "cdr", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
              "zip", "rar", "7z", "txt"],
-    "音频": ["wav", "flac", "mp3", "aac", "ogg", "wma", "m4a"],
-    "字幕": ["ass", "srt", "vtt", "ssa"],
-    "数据组测试": ["*"],  # 无限制
+    "音频": ["wav", "flac", "mp3", "aac", "ogg", "wma", "m4a", "zip", "rar", "7z"],  # 工程压缩包
+    "字幕": ["ass", "srt", "vtt", "ssa", "zip", "rar", "7z"],  # 字幕工程压缩包
+    "数据组测试": ["*"],
 }
 
 # 分类 → 云盘存储子目录名（一级分类目录）

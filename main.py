@@ -374,6 +374,7 @@ class FileSyncPlugin(Star):
             "old_file": 0,          # 时间戳早于上次同步
             "file_id_synced": 0,    # file_id 去重命中
             "name_size_synced": 0,  # 文件名+大小+群号去重命中
+            "naming_invalid": 0,    # 命名不合规且非数据组测试
         }
 
         for file_info in files:
@@ -428,6 +429,19 @@ class FileSyncPlugin(Star):
                 })
                 continue
 
+            # ── 过滤 5: 命名规范校验（非标准分类且非数据组测试 → 跳过）──
+            if self.config.filename_check_enabled and category:
+                naming_result = self.naming_validator.parse(file_name) if self.naming_validator else None
+                if naming_result and not naming_result.is_valid and category != "数据组测试":
+                    skipped_count["naming_invalid"] = skipped_count.get("naming_invalid", 0) + 1
+                    self.state_manager.add_diagnostic_log("skip", f"命名不合规且非数据组测试: {file_name}", {
+                        "reason": "naming_invalid",
+                        "file_name": file_name,
+                        "category": category,
+                        "group_id": group_id,
+                    })
+                    continue
+
             # 生成目标路径（传递已解析的分类）
             target_path = self.config.generate_target_path(
                 group_name, group_id, file_name, category
@@ -479,6 +493,7 @@ class FileSyncPlugin(Star):
             "skipped_by_old_file": skipped_count["old_file"],
             "skipped_by_file_id": skipped_count["file_id_synced"],
             "skipped_by_name_size": skipped_count["name_size_synced"],
+            "skipped_by_naming_invalid": skipped_count.get("naming_invalid", 0),
             "sync_time": str(sync_time),
         })
         logger.info(
@@ -487,7 +502,8 @@ class FileSyncPlugin(Star):
             f"(类型:{skipped_count['type_filter']} "
             f"时间:{skipped_count['old_file']} "
             f"file_id:{skipped_count['file_id_synced']} "
-            f"name+size:{skipped_count['name_size_synced']})"
+            f"name+size:{skipped_count['name_size_synced']} "
+            f"命名:{skipped_count.get('naming_invalid', 0)})"
         )
 
     async def _sync_single_file(self, group_id: str, target_path: str,
