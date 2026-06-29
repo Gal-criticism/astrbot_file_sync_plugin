@@ -4,79 +4,32 @@ QQ群文件自动同步到NextCloud私有云盘的AstrBot插件。
 
 ## 功能
 
-- 定时扫描QQ群文件夹（支持间隔模式和时间点模式）
-- 自动同步文件到NextCloud
-- 支持多群配置
-- 文件按类型分类存储（可自定义路径模板）
-- 文件重名自动重命名
-- 同步失败自动重试
-- 增量同步（只同步新增文件）
-- **三层去重策略**：时间戳快速跳过 + file_id 精确匹配 + 文件名+大小+群号 兜底检查
-- **统一北京时间**：所有时间操作使用东八区时区
-- **重试失败通知**：达到最大重试次数后通知用户
-- **诊断日志**：记录同步过程中的详细决策信息，便于排查问题
-
-## 核心逻辑
-
-```mermaid
-flowchart TD
-    A[定时同步触发] --> B[遍历配置的群列表]
-    B --> C[获取群文件列表]
-    C --> D{文件列表为空?}
-    D -->|是| E[跳过该群]
-    D -->|否| F[遍历文件列表]
-    
-    F --> G{文件类型允许?}
-    G -->|否| H[跳过文件]
-    G -->|是| I{时间戳检查}
-
-    I -->|upload_time <= last_sync| J[跳过旧文件]
-    I -->|upload_time > last_sync| K{第一层: file_id 精确匹配}
-
-    K -->|已同步| L[跳过重复文件]
-    K -->|未同步| K2{第二层: 文件名+大小+群号}
-
-    K2 -->|已同步| L
-    K2 -->|未同步| M[生成目标路径]
-    
-    M --> N[下载文件]
-    N --> O{下载成功?}
-    O -->|否| P[加入重试队列]
-    O -->|是| Q[上传到NextCloud]
-    
-    Q --> R{上传成功?}
-    R -->|否| P
-    R -->|是| S[记录同步成功]
-    
-    S --> T[更新上次同步时间]
-    P --> U[处理重试队列]
-    
-    U --> V{重试次数超限?}
-    V -->|是| W[通知用户失败]
-    V -->|否| X[重新同步文件]
-```
-
-### 去重策略说明
-
-```mermaid
-flowchart LR
-    A[新文件] --> B{时间戳快速跳过}
-    B -->|upload_time <= last_sync| C[跳过]
-    B -->|upload_time > last_sync| D{第一层: file_id 精确匹配}
-    D -->|已同步| C
-    D -->|未同步| E{第二层: 文件名+大小+群号}
-    E -->|已同步| C
-    E -->|未同步| F[执行同步]
-```
+- 定时扫描QQ群文件（支持间隔模式和时间点模式）
+- 自动同步文件到NextCloud（按命名规范分析自动归类子目录）
+- **五层过滤**：文件类型 → 时间戳 → file_id去重 → name+size去重 → 命名规范
+- **细粒度失败诊断**：10种失败阶段枚举，精确到下载/上传的具体原因
+- **文件命名规范检查**：六大标准分类（封面/成片/素材/音频/字幕/数据组测试）
+  - 新格式：`项目名称-分类v版本号-后缀.扩展名`
+  - 兼容旧格式：`分类--名称.扩展名`（deprecated，温和提醒迁移）
+- **预设路径与群绑定**：群 → 预设路径 → 自动定向云盘目录，通过WebDAV校验
+- **云盘目录分级**：`{预设路径}/{分类}[/工程]/{文件名}`
+- 同步失败自动重试（最多3次），耗尽后群内通知
+- **诊断日志**：记录跳过原因、失败阶段、命名分析，可通过命令查看
 
 ## 命令
 
-- `/同步文件` - 手动触发同步（增量同步）
-- `/同步状态` - 查看同步状态（已同步文件数、待重试数）
-- `/同步统计 [群号]` - 查看同步统计，支持按群号筛选；无参数时显示总览+分群统计
-- `/同步调试` - 检查后端支持的 API 端点
-- `/诊断日志` - 查看最近 20 条诊断日志
-- `/清空诊断日志` - 清空诊断日志
+| 命令 | 功能 |
+|------|------|
+| `/同步文件` | 手动触发全群同步 |
+| `/同步状态` | 查看同步统计（总数/待重试） |
+| `/同步统计 [群号]` | 分群统计或总览 |
+| `/同步调试` | 检查后端 API 可用性 |
+| `/诊断日志` | 查看最近诊断日志 |
+| `/清空诊断日志` | 清空诊断日志 |
+| `/预设路径 列表/添加/删除` | 预设路径管理（添加时WebDAV校验） |
+| `/绑定路径 <群号> <名称>` | 绑定群到预设路径 |
+| `/解绑路径 <群号>` | 解除群绑定 |
+| `/绑定列表` | 列出所有绑定关系 |
 
 ## 配置
 
@@ -84,81 +37,86 @@ flowchart LR
 
 | 配置项 | 说明 | 默认值 |
 |-------|------|--------|
-| `nextcloud_url` | NextCloud WebDAV地址 | - |
-| `nextcloud_username` | NextCloud用户名 | - |
-| `nextcloud_password` | NextCloud应用密码 | - |
-| `enabled_groups` | 启用的群号列表，如 `["123456", "987654"]` | - |
-| `base_path` | 云盘基础路径 | `/QQ群文件` |
-| `path_template` | 文件夹路径模板 | `{group_name}_{group_id}/{file_type}` |
-| `sync_interval_minutes` | 同步间隔（分钟），时间点模式下无效 | `1440` |
+| `sync_enabled` | 同步功能总开关（false则定时循环不启动） | `true` |
+| `nextcloud_url` | NextCloud WebDAV地址 | — |
+| `nextcloud_username` | NextCloud用户名 | — |
+| `nextcloud_password` | NextCloud应用密码 | — |
+| `enabled_groups` | 启用的群号列表（安全开关，需同步配置群绑定） | — |
+| `base_path` | 回退用云盘基础路径（群未绑定时使用） | `/QQ群文件` |
+| `sync_interval_minutes` | 同步间隔（分钟） | `1440` |
 | `sync_time_points` | 同步时间点，格式 `["08:00", "12:00"]`，配置后覆盖间隔模式 | `[]` |
-| `file_type_whitelist` | 允许的文件类型，如 `[".pdf", ".docx"]`，`["*"]` 表示全部 | `["*"]` |
-| `notify_on_success` | 同步成功时通知 | `false` |
-| `notify_on_error` | 同步失败时通知 | `true` |
+| `file_type_whitelist` | 允许的文件类型，`["*"]` 表示全部 | `["*"]` |
 | `retry_queue_enabled` | 启用失败重试队列 | `true` |
 | `retry_max_attempts` | 最大重试次数 | `3` |
 | `retry_delay_seconds` | 重试间隔（秒） | `300` |
+| `filename_check_enabled` | 启用上传时文件名检查 | `false` |
+| `filename_check_enabled` | 文件名模板 | `{project_name}-{category}v{version}-{suffix}.{ext}` |
+| `naming_extra_categories` | 自定义扩展分类（JSON格式） | `{}` |
+| `filename_notify_template` | @提醒自定义模板 | — |
 
-## 路径模板
+## 路径规则
 
-`path_template` 支持以下占位符：
+**有群绑定时**: `{preset_path}/{分类}[/工程]/{文件名}`  
+**无群绑定时**: `{base_path}/{群名_群号}/{分类}[/工程]/{文件名}`  
 
-- `{group_name}` - QQ群名称
-- `{group_id}` - QQ群号
-- `{file_type}` - 文件扩展名（小写），如 `pdf`、`docx`
+工程后缀（`工程/工程v2/工程-PR2022`）仅在成片、音频分类下产生二级`工程/`目录。
 
-### 示例
+## 命名规范
 
-假设配置：
-```json
-{
-  "base_path": "/QQ群文件",
-  "path_template": "{group_name}_{group_id}/{file_type}"
-}
+```
+新格式: {项目名称}-{分类}[v{版本号}][-{后缀}].{扩展名}
+旧格式: {分类}--{名称}.{扩展名}  (deprecated，仍接受但温和提醒)
 ```
 
-同步到群「游戏群」(群号123456) 中的 `文档.pdf` 文件，最终路径为：
+六大标准分类: 封面 / 成片 / 素材 / 音频 / 字幕 / 数据组测试
+
+详情见 [同步上传逻辑文档](docs/superpowers/specs/2026-06-29-同步上传逻辑文档.md)
+
+## 架构
+
 ```
-/QQ群文件/游戏群_123456/pdf/文档.pdf
+file_sync_plugin2/
+├── main.py            # 插件生命周期 + 命令注册 (~530行)
+├── config.py          # Pydantic 配置模型
+├── handlers/          # 命令与事件处理器
+│   ├── sync_commands.py      # 同步命令 + 预设路径/群绑定管理
+│   ├── diagnostic_commands.py
+│   └── file_events.py        # 文件上传事件监听
+├── services/          # 核心服务
+│   ├── naming_validator.py   # 新命名规范验证器
+│   ├── filename_checker.py   # [deprecated] 旧兼容层
+│   ├── cloud_sync.py         # NextCloud WebDAV
+│   ├── state_manager.py      # SQLite 状态管理(含预设路径+群绑定)
+│   ├── file_scanner.py       # QQ群文件API
+│   ├── file_downloader.py    # 流式下载
+│   ├── sync_executor.py      # 下载→上传协调器
+│   └── notify_service.py     # @提醒
+├── models/            # 数据模型
+│   ├── naming_result.py      # NamingResult
+│   ├── sync_result.py        # SyncResult(失败阶段枚举)
+│   ├── sync_record.py
+│   └── validation_result.py  # [deprecated]
+├── utils/             # 工具
+│   ├── constants.py
+│   ├── config_helpers.py
+│   └── rename.py
+├── tests/             # 测试
+└── docs/              # 文档
 ```
 
 ## 安装
 
-1. 将 `file_sync_plugin2` 目录复制到AstrBot插件目录
-2. 在AstrBot管理面板中启用插件
-3. 配置NextCloud连接信息和启用的群号
-4. 使用 `/同步文件` 命令手动触发首次同步
-
-## 项目结构
-
-```
-file_sync_plugin2/
-├── __init__.py
-├── main.py            # 主插件类
-├── metadata.yaml      # 插件元数据
-├── config.py          # 配置模型
-├── requirements.txt   # 依赖
-├── README.md          # 插件说明
-├── models/            # 数据模型
-│   └── sync_record.py
-├── services/          # 核心服务
-│   ├── cloud_sync.py      # NextCloud同步
-│   └── state_manager.py   # 状态管理(SQLite)
-└── utils/             # 工具函数
-    └── rename.py      # 文件重命名
-```
-
-## 依赖
-
-- `httpx >= 0.24.0` - HTTP客户端
+1. 将 `file_sync_plugin2` 目录复制到 AstrBot 插件目录
+2. 在 AstrBot 管理面板中启用插件
+3. 配置 NextCloud 连接信息和启用的群号
+4. 添加预设路径：`/预设路径 添加 <名称> <NextCloud路径>`
+5. 绑定群：`/绑定路径 <群号> <路径名称>`
 
 ## 开发
 
-### 运行测试
-
 ```bash
 pip install -r file_sync_plugin2/requirements.txt
-pytest tests/ -v
+pytest tests/ file_sync_plugin2/tests/ -v
 ```
 
 ## License
