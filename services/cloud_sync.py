@@ -5,7 +5,6 @@
 """
 
 import time
-import json
 import os
 from pathlib import Path
 from typing import Optional, List
@@ -40,8 +39,6 @@ class CloudSyncService:
         self._dav_url = _build_dav_url(config.nextcloud_url, config.nextcloud_username)
         self._username = config.nextcloud_username
         self._password = config.nextcloud_password
-        self._upload_progress_dir = Path("upload_progress")
-        self._upload_progress_dir.mkdir(exist_ok=True)
 
         from urllib.parse import urlparse
         self._dav_path = urlparse(self._dav_url).path.rstrip('/')
@@ -222,43 +219,11 @@ class CloudSyncService:
             logger.error(f"列出子目录异常 {base_path}: {type(e).__name__}: {e}")
         return dirs
 
-    # ===== 上传进度管理（用于断点续传元数据） =====
-
-    def _get_progress_file_path(self, local_path: str, remote_path: str) -> Path:
-        """获取上传进度文件路径"""
-        import hashlib
-        key = f"{local_path}:{remote_path}"
-        hash_key = hashlib.md5(key.encode()).hexdigest()
-        return self._upload_progress_dir / f"{hash_key}.json"
-
-    def _save_upload_progress(self, local_path: str, remote_path: str,
-                               uploaded_bytes: int, chunk_size: int):
-        """保存上传进度"""
-        progress_file = self._get_progress_file_path(local_path, remote_path)
-        progress_data = {
-            "local_path": local_path,
-            "remote_path": remote_path,
-            "uploaded_bytes": uploaded_bytes,
-            "chunk_size": chunk_size,
-            "timestamp": time.time()
-        }
-        with open(progress_file, "w") as f:
-            json.dump(progress_data, f)
-
-    def _clear_upload_progress(self, local_path: str, remote_path: str):
-        """清除上传进度"""
-        progress_file = self._get_progress_file_path(local_path, remote_path)
-        if progress_file.exists():
-            progress_file.unlink()
-
     # ===== 核心：文件上传 =====
 
     def upload_file(self, local_path: str, remote_path: str,
                     file_size: int = 0, max_retries: int = 3) -> bool:
-        """上传文件到 NextCloud（统一入口）
-
-        自动选择上传策略：所有文件使用直接上传（WebDAV PUT）。
-        大文件（>100MB）使用更长的超时时间。
+        """上传文件到 NextCloud（统一入口，直接上传）
 
         Args:
             local_path: 本地文件路径
@@ -336,7 +301,6 @@ class CloudSyncService:
                             f"[UPLOAD] 上传成功: {remote_path} "
                             f"(状态码: {response.status_code}, 耗时: {elapsed:.1f}s, 速度: {speed:.2f} MB/s)"
                         )
-                        self._clear_upload_progress(local_path, remote_path)
                         return True
                     else:
                         logger.error(

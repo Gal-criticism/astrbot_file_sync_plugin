@@ -169,15 +169,23 @@ class FileSyncConfig(BaseModel):
             return "other"
         return filename.rsplit(".", 1)[-1].lower()
 
-    def generate_target_path(self, group_name: str, group_id: str, filename: str) -> str:
+    def generate_target_path(self, group_name: str, group_id: str, filename: str,
+                            category: Optional[str] = None) -> str:
         """根据模板生成目标路径
 
         新行为：优先按文件分类生成子目录
         - 如文件 "项目A-成片v1.mp4" → {base_path}/{group_name}_{group_id}/成片/
         - 如无法识别分类 → 回退到 {file_type} 子目录
+
+        Args:
+            group_name: 群名称
+            group_id: 群号
+            filename: 文件名
+            category: 已解析的分类（可选，避免重复解析）
         """
-        # 尝试从文件名提取分类
-        category = self._extract_category_from_filename(filename)
+        if category is None:
+            category = self._extract_category_from_filename(filename)
+
         if category:
             path = f"{group_name}_{group_id}/{category}"
         else:

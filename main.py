@@ -332,32 +332,10 @@ class FileSyncPlugin(Star):
             return (f"Group_{group_id}", group_id)
 
     async def _get_group_files(self, client, group_id: str) -> list:
-        """获取群文件列表，尝试多种 API 端点以兼容不同后端"""
-        api_endpoints = ["get_group_root_files", "get_group_file_list", "get_group_files"]
-
-        for api_name in api_endpoints:
-            try:
-                result = await client.api.call_action(api_name, group_id=int(group_id))
-                logger.debug(f"API {api_name} 成功")
-
-                if isinstance(result, dict):
-                    files = result.get("files", [])
-                    if files or result.get("folders"):
-                        return files
-                if isinstance(result, list):
-                    return result
-
-            except Exception as e:
-                error_msg = str(e)
-                if "1404" in error_msg or "不支持" in error_msg:
-                    logger.warning(f"API {api_name} 不被支持，尝试下一个")
-                    continue
-                else:
-                    logger.error(f"API {api_name} 失败: {e}")
-                    continue
-
-        logger.error("所有文件列表 API 均失败")
-        return []
+        """获取群文件列表（委托给 FileScanner）"""
+        from .services.file_scanner import FileScanner
+        scanner = FileScanner(client)
+        return await scanner.list_files(group_id)
 
     async def sync_group(self, group_id: str):
         """同步单个群的文件"""
@@ -372,8 +350,9 @@ class FileSyncPlugin(Star):
         group_name, group_id = await self.get_group_info(group_id)
         last_sync_time = self.state_manager.get_last_sync_time(group_id)
 
-        self.state_manager.add_diagnostic_log("sync_state", f"群 {group_id} 同步状态", {
+        self.state_manager.add_diagnostic_log("sync_state", f"群 {group_id} 同步开始", {
             "group_id": group_id,
+            "group_name": group_name,
             "last_sync_time": str(last_sync_time),
             "is_first_sync": last_sync_time is None,
         })
@@ -381,11 +360,21 @@ class FileSyncPlugin(Star):
         files = await self._get_group_files(client, group_id)
         if not files:
             logger.warning(f"群 {group_id} 没有获取到文件")
+            self.state_manager.add_diagnostic_log("sync_skip", f"群 {group_id} 无文件", {
+                "reason": "empty_file_list"
+            })
             return
 
-        logger.info(f"群 {group_id} 共有 {len(files)} 个文件")
+        total_files = len(files)
+        logger.info(f"群 {group_id} 共有 {total_files} 个文件")
         sync_time = datetime.now(CN_TZ)
         new_files_count = 0
+        skipped_count = {
+            "type_filter": 0,      # 文件类型不允许
+            "old_file": 0,          # 时间戳早于上次同步
+            "file_id_synced": 0,    # file_id 去重命中
+            "name_size_synced": 0,  # 文件名+大小+群号去重命中
+        }
 
         for file_info in files:
             file_id = file_info.get("file_id") or file_info.get("fileid") or file_info.get("id", "")
@@ -394,21 +383,55 @@ class FileSyncPlugin(Star):
             upload_time_ts = file_info.get("add_time") or file_info.get("upload_time") or file_info.get("create_time", 0)
             upload_time = datetime.fromtimestamp(upload_time_ts, tz=CN_TZ) if upload_time_ts else None
 
-            # 类型过滤
+            # 预先解析分类（缓存，避免重复解析）
+            category = self.config._extract_category_from_filename(file_name)
+
+            # ── 过滤 1: 文件类型 ──
             if not self.config.is_file_type_allowed(file_name):
+                skipped_count["type_filter"] += 1
+                self.state_manager.add_diagnostic_log("skip", f"跳过不允许的类型: {file_name}", {
+                    "reason": "file_type_not_allowed",
+                    "file_name": file_name,
+                    "group_id": group_id,
+                })
                 continue
 
-            # 时间戳检查
+            # ── 过滤 2: 时间戳 ──
             if last_sync_time and upload_time and upload_time <= last_sync_time:
+                skipped_count["old_file"] += 1
+                self.state_manager.add_diagnostic_log("skip", f"跳过旧文件: {file_name}", {
+                    "reason": "old_file",
+                    "upload_time": str(upload_time),
+                    "last_sync_time": str(last_sync_time),
+                    "group_id": group_id,
+                })
                 continue
 
-            # 两层去重
+            # ── 过滤 3: file_id 去重 ──
             if self.state_manager.is_synced(file_id):
-                continue
-            if self.state_manager.is_synced_by_name_size(file_name, file_size, group_id):
+                skipped_count["file_id_synced"] += 1
+                self.state_manager.add_diagnostic_log("skip", f"跳过已同步(file_id): {file_name}", {
+                    "reason": "file_id_synced",
+                    "file_id": file_id,
+                    "group_id": group_id,
+                })
                 continue
 
-            target_path = self.config.generate_target_path(group_name, group_id, file_name)
+            # ── 过滤 4: 文件名+大小+群号去重 ──
+            if self.state_manager.is_synced_by_name_size(file_name, file_size, group_id):
+                skipped_count["name_size_synced"] += 1
+                self.state_manager.add_diagnostic_log("skip", f"跳过已同步(name+size): {file_name}", {
+                    "reason": "name_size_synced",
+                    "file_name": file_name,
+                    "file_size": file_size,
+                    "group_id": group_id,
+                })
+                continue
+
+            # 生成目标路径（传递已解析的分类）
+            target_path = self.config.generate_target_path(
+                group_name, group_id, file_name, category
+            )
             success = await self._sync_single_file(
                 group_id, target_path, file_id, file_name, file_size
             )
@@ -427,9 +450,37 @@ class FileSyncPlugin(Star):
                         file_id, file_name, file_size, group_id, target_path,
                         self.config.retry_delay_seconds
                     )
+                self.state_manager.add_diagnostic_log("sync_fail", f"同步失败: {file_name}", {
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "file_size": file_size,
+                    "group_id": group_id,
+                    "target_path": target_path,
+                })
 
         self.state_manager.update_last_sync_time(group_id, sync_time)
-        logger.info(f"群 {group_id} 同步完成，新增 {new_files_count} 个文件")
+
+        # 汇总诊断日志
+        skipped_total = sum(skipped_count.values())
+        self.state_manager.add_diagnostic_log("sync_state", f"群 {group_id} 同步完成", {
+            "group_id": group_id,
+            "total_files": total_files,
+            "new_files_synced": new_files_count,
+            "skipped_total": skipped_total,
+            "skipped_by_type_filter": skipped_count["type_filter"],
+            "skipped_by_old_file": skipped_count["old_file"],
+            "skipped_by_file_id": skipped_count["file_id_synced"],
+            "skipped_by_name_size": skipped_count["name_size_synced"],
+            "sync_time": str(sync_time),
+        })
+        logger.info(
+            f"群 {group_id} 同步完成: 共 {total_files} 个文件, "
+            f"新增 {new_files_count}, 跳过 {skipped_total} "
+            f"(类型:{skipped_count['type_filter']} "
+            f"时间:{skipped_count['old_file']} "
+            f"file_id:{skipped_count['file_id_synced']} "
+            f"name+size:{skipped_count['name_size_synced']})"
+        )
 
     async def _sync_single_file(self, group_id: str, target_path: str,
                                  file_id: str, file_name: str, file_size: int) -> bool:

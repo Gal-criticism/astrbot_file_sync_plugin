@@ -25,35 +25,10 @@ class FileDownloader:
         self.client = client
 
     async def get_file_url(self, group_id: str, file_id: str) -> Optional[str]:
-        """获取文件下载链接
-
-        尝试多种 API 端点以兼容不同后端
-
-        Args:
-            group_id: 群号
-            file_id: 文件 ID
-
-        Returns:
-            下载链接 URL，失败返回 None
-        """
-        url_apis = ["get_group_file_url", "get_file_url"]
-        for api_name in url_apis:
-            try:
-                url_result = await self.client.api.call_action(
-                    api_name,
-                    group_id=int(group_id),
-                    file_id=file_id
-                )
-                file_url = url_result.get("url")
-                if file_url:
-                    logger.info(f"[DOWNLOAD] 获取下载链接成功: {file_url[:100]}...")
-                    return file_url
-            except Exception as e:
-                logger.warning(f"[DOWNLOAD] API {api_name} 失败: {e}")
-                continue
-
-        logger.error(f"[DOWNLOAD] 无法获取文件下载链接: {file_id}")
-        return None
+        """获取文件下载链接（委托给 FileScanner）"""
+        from .file_scanner import FileScanner
+        scanner = FileScanner(self.client)
+        return await scanner.get_file_url(group_id, file_id)
 
     async def download_file(
         self,
@@ -133,9 +108,16 @@ class FileDownloader:
 
         actual_size = local_path.stat().st_size
         if actual_size != file_size:
-            logger.warning(
+            logger.error(
                 f"[DOWNLOAD] 文件大小不匹配! 预期: {file_size}, 实际: {actual_size}"
+                f" ({actual_size / (1024*1024):.2f} MB vs {file_size / (1024*1024):.2f} MB)"
             )
+            # 删除不完整的文件
+            try:
+                local_path.unlink()
+            except Exception:
+                pass
+            return False, None
 
         return True, str(local_path)
 
