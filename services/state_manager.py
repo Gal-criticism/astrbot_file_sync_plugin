@@ -61,6 +61,24 @@ class StateManager:
                 last_sync_time TEXT NOT NULL
             )
         """)
+        # 预设路径表
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS preset_paths (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                remote_path TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        # 群绑定表
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS group_bindings (
+                group_id TEXT PRIMARY KEY,
+                path_id INTEGER NOT NULL,
+                bound_at TEXT NOT NULL,
+                FOREIGN KEY (path_id) REFERENCES preset_paths(id)
+            )
+        """)
         conn.commit()
 
     def is_synced(self, file_id: str) -> bool:
@@ -287,3 +305,152 @@ class StateManager:
                 now
             ))
         conn.commit()
+
+    # ──────── 预设路径管理 ────────
+
+    def add_preset_path(self, name: str, remote_path: str) -> tuple:
+        """添加预设路径
+
+        Returns:
+            (success, message)
+        """
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO preset_paths (name, remote_path, created_at) VALUES (?, ?, ?)",
+                (name, remote_path, datetime.now(CN_TZ).isoformat())
+            )
+            conn.commit()
+            return True, f"预设路径已添加: {name} → {remote_path}"
+        except sqlite3.IntegrityError:
+            # 名称已存在，更新路径
+            conn.execute(
+                "UPDATE preset_paths SET remote_path = ? WHERE name = ?",
+                (remote_path, name)
+            )
+            conn.commit()
+            return True, f"预设路径已更新: {name} → {remote_path}"
+
+    def delete_preset_path(self, name: str) -> tuple:
+        """删除预设路径
+
+        如果该路径已绑定群，阻止删除。
+        """
+        conn = self._get_conn()
+        # 查 id
+        row = conn.execute("SELECT id FROM preset_paths WHERE name = ?", (name,)).fetchone()
+        if not row:
+            return False, f"预设路径不存在: {name}"
+        path_id = row[0]
+        # 查绑定
+        binding = conn.execute(
+            "SELECT group_id FROM group_bindings WHERE path_id = ?", (path_id,)
+        ).fetchone()
+        if binding:
+            return False, f"路径 {name} 已绑定群 {binding[0]}，请先解绑"
+        conn.execute("DELETE FROM preset_paths WHERE id = ?", (path_id,))
+        conn.commit()
+        return True, f"预设路径已删除: {name}"
+
+    def list_preset_paths(self) -> List[dict]:
+        """列出所有预设路径，包含各路径绑定的群号列表"""
+        conn = self._get_conn()
+        rows = conn.execute("SELECT id, name, remote_path, created_at FROM preset_paths ORDER BY name").fetchall()
+        result = []
+        for r in rows:
+            groups = conn.execute(
+                "SELECT group_id FROM group_bindings WHERE path_id = ?", (r[0],)
+            ).fetchall()
+            result.append({
+                "id": r[0],
+                "name": r[1],
+                "remote_path": r[2],
+                "created_at": r[3],
+                "bound_groups": [g[0] for g in groups],
+            })
+        return result
+
+    def get_preset_path_by_name(self, name: str) -> Optional[dict]:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id, name, remote_path FROM preset_paths WHERE name = ?", (name,)
+        ).fetchone()
+        if row:
+            return {"id": row[0], "name": row[1], "remote_path": row[2]}
+        return None
+
+    def get_preset_path_by_id(self, path_id: int) -> Optional[dict]:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id, name, remote_path FROM preset_paths WHERE id = ?", (path_id,)
+        ).fetchone()
+        if row:
+            return {"id": row[0], "name": row[1], "remote_path": row[2]}
+        return None
+
+    # ──────── 群绑定管理 ────────
+
+    def bind_group(self, group_id: str, path_name: str) -> tuple:
+        """绑定群到预设路径
+
+        Returns:
+            (success, message)
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id, remote_path FROM preset_paths WHERE name = ?", (path_name,)
+        ).fetchone()
+        if not row:
+            return False, f"预设路径不存在: {path_name}"
+        path_id, remote_path = row
+        conn.execute(
+            "INSERT OR REPLACE INTO group_bindings (group_id, path_id, bound_at) VALUES (?, ?, ?)",
+            (group_id, path_id, datetime.now(CN_TZ).isoformat())
+        )
+        conn.commit()
+        return True, f"群 {group_id} 已绑定到 {path_name} ({remote_path})"
+
+    def unbind_group(self, group_id: str) -> tuple:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT p.name FROM group_bindings g JOIN preset_paths p ON g.path_id = p.id WHERE g.group_id = ?",
+            (group_id,)
+        ).fetchone()
+        if not row:
+            return False, f"群 {group_id} 未绑定任何路径"
+        conn.execute("DELETE FROM group_bindings WHERE group_id = ?", (group_id,))
+        conn.commit()
+        return True, f"群 {group_id} 已解除与 {row[0]} 的绑定"
+
+    def get_group_binding(self, group_id: str) -> Optional[str]:
+        """获取群绑定的预设路径（返回 remote_path），未绑定返回 None"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT p.remote_path FROM group_bindings g JOIN preset_paths p ON g.path_id = p.id WHERE g.group_id = ?",
+            (group_id,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def get_group_binding_detail(self, group_id: str) -> Optional[dict]:
+        """获取群绑定的预设路径详情"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT p.name, p.remote_path, g.bound_at FROM group_bindings g "
+            "JOIN preset_paths p ON g.path_id = p.id WHERE g.group_id = ?",
+            (group_id,)
+        ).fetchone()
+        if row:
+            return {"name": row[0], "remote_path": row[1], "bound_at": row[2]}
+        return None
+
+    def list_group_bindings(self) -> List[dict]:
+        """列出所有群绑定关系"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT g.group_id, p.name, p.remote_path, g.bound_at "
+            "FROM group_bindings g JOIN preset_paths p ON g.path_id = p.id ORDER BY g.group_id"
+        ).fetchall()
+        return [
+            {"group_id": r[0], "name": r[1], "remote_path": r[2], "bound_at": r[3]}
+            for r in rows
+        ]

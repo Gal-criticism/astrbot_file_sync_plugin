@@ -55,12 +55,6 @@ class FileSyncConfig(BaseModel):
         description="@提醒模板"
     )
 
-    # 预设路径配置
-    preset_paths: str = Field(
-        default="{}",
-        description="预设路径映射，JSON格式字符串: {\"项目A\": \"/客户项目/项目A\", \"项目B\": \"/个人项目/项目B\"}"
-    )
-
     @validator("sync_time_points", pre=True)
     def validate_sync_time_points(cls, v):
         """验证时间点格式"""
@@ -141,8 +135,8 @@ class FileSyncConfig(BaseModel):
         return None
 
     def have_preset_paths(self) -> bool:
-        """是否有预设路径配置"""
-        return len(self.get_preset_paths()) > 0
+        """[deprecated] 预设路径已迁移到 SQLite，返回 False"""
+        return False
 
     def get_category_subdir(self, category: str) -> str:
         """根据分类返回云盘子目录名
@@ -217,10 +211,11 @@ class FileSyncConfig(BaseModel):
 
     def generate_target_path(self, group_name: str, group_id: str, filename: str,
                             category: Optional[str] = None,
-                            project_name: Optional[str] = None) -> str:
+                            project_name: Optional[str] = None,
+                            preset_base: Optional[str] = None) -> str:
         """根据模板生成目标路径
 
-        优先使用预设路径：
+        优先使用预设路径（从 SQLite group_bindings 查询）：
         - 匹配到 → {预设路径}/{分类}[/工程]/{文件名}
         - 未匹配 → {base_path}/{group_name}_{group_id}/{项目名}/{分类}[/工程]/{文件名}
 
@@ -239,35 +234,25 @@ class FileSyncConfig(BaseModel):
         if category is None:
             category = self._extract_category_from_filename(filename)
 
-        # 解析文件命名的完整结构化信息
-        naming_info = None
-        if category:
-            validator = NamingValidator()
+        # 调用方已传 preset_base，则使用它
+        if category and preset_base:
+            preset_base = preset_base.rstrip("/")
+            validator = NamingValidator(extra_categories=self.get_naming_extra_categories())
             naming_info = validator.parse(filename)
-            if project_name is None:
-                project_name = naming_info.project_name
-
-        # 尝试匹配预设路径
-        if category and project_name:
-            preset_base = self.get_preset_path(project_name)
-            if preset_base:
-                preset_base = preset_base.rstrip("/")
-                subdir = validator.get_target_subdir(naming_info)
-                # 去掉项目名层级（预设路径已包含）
-                parts = subdir.split("/", 1)
-                inner = parts[1] if len(parts) > 1 else ""
-                if inner:
-                    return f"{preset_base}/{inner}/{filename}"
-                else:
-                    return f"{preset_base}/{filename}"
+            subdir = validator.get_target_subdir(naming_info)
+            parts = subdir.split("/", 1)
+            inner = parts[1] if len(parts) > 1 else ""
+            if inner:
+                return f"{preset_base}/{inner}/{filename}"
+            else:
+                return f"{preset_base}/{filename}"
 
         # 回退：使用 base_path + group 格式
-        if category and naming_info:
-            validator = NamingValidator()
+        if category:
+            validator = NamingValidator(extra_categories=self.get_naming_extra_categories())
+            naming_info = validator.parse(filename)
             subdir = validator.get_target_subdir(naming_info)
             path = f"{group_name}_{group_id}/{subdir}"
-        elif category:
-            path = f"{group_name}_{group_id}/{category}"
         else:
             file_type = self.get_file_type(filename)
             path = self.path_template.format(

@@ -126,8 +126,13 @@ class SyncCommandHandler:
 
         用法:
           /预设路径                — 列出所有预设路径
-          /预设路径 添加 <项目名> <路径>  — 添加或修改预设路径
-          /预设路径 删除 <项目名>         — 删除预设路径
+          /预设路径 添加 <名称> <NextCloud路径>  — 添加（校验路径存在）
+          /预设路径 删除 <名称>         — 删除预设路径
+          /预设路径 列表             — 列出所有预设路径
+
+          /绑定路径 <群号> <路径名称>    — 绑定群到预设路径
+          /解绑路径 <群号>              — 解除绑定
+          /绑定列表                     — 列出所有绑定关系
         """
         if not self.config:
             yield event.plain_result("配置未初始化")
@@ -135,54 +140,80 @@ class SyncCommandHandler:
 
         args = event.message_str.strip().split()
         subcmd = args[1] if len(args) > 1 else "list"
-        presets = self.config.get_preset_paths()
+        sm = self._plugin.state_manager
 
-        if subcmd == "list":
-            if not presets:
-                yield event.plain_result("当前未配置任何预设路径\n\n用法: /预设路径 添加 <项目名> <路径>")
+        # ── /预设路径 ──
+        if subcmd in ("list", "列表"):
+            paths = sm.list_preset_paths()
+            if not paths:
+                yield event.plain_result("当前无预设路径\n\n用法: /预设路径 添加 <名称> <路径>")
                 return
             msg = "=== 预设路径 ===\n"
-            for name, path in presets.items():
-                msg += f"  {name} → {path}\n"
-            msg += "\n用法: /预设路径 添加 <项目名> <路径>\n"
-            msg += "      /预设路径 删除 <项目名>"
+            for p in paths:
+                bound = f"[绑定: {', '.join(p['bound_groups'])}]" if p["bound_groups"] else "[未绑定]"
+                msg += f"  {p['name']} → {p['remote_path']} {bound}\n"
+            msg += "\n用法: /预设路径 添加 <名称> <路径>\n"
+            msg += "      /绑定路径 <群号> <路径名称>"
             yield event.plain_result(msg)
 
         elif subcmd == "添加":
             if len(args) < 4:
-                yield event.plain_result("用法: /预设路径 添加 <项目名> <路径>\n例如: /预设路径 添加 项目A /客户项目/项目A")
+                yield event.plain_result("用法: /预设路径 添加 <名称> <NextCloud路径>\n例如: /预设路径 添加 项目A /客户/项目A")
                 return
             name = args[2]
             path = args[3]
             path = "/" + path.lstrip("/")
-            presets[name] = path
 
-            # 更新配置
-            import json
-            try:
-                self.config.preset_paths = json.dumps(presets, ensure_ascii=False)
-                yield event.plain_result(f"预设路径已更新: {name} → {path}")
-                logger.info(f"预设路径已更新: {name} → {path}")
-            except Exception as e:
-                yield event.plain_result(f"更新预设路径失败: {e}")
+            # 通过 WebDAV 校验路径存在
+            if self.cloud_sync:
+                if not self.cloud_sync._path_exists(path):
+                    yield event.plain_result(f"路径不存在: {path}\n请确认 NextCloud 上存在此目录")
+                    return
+
+            result, msg = sm.add_preset_path(name, path)
+            yield event.plain_result(msg)
 
         elif subcmd == "删除":
             if len(args) < 3:
-                yield event.plain_result("用法: /预设路径 删除 <项目名>")
+                yield event.plain_result("用法: /预设路径 删除 <名称>")
                 return
-            name = args[2]
-            if name not in presets:
-                yield event.plain_result(f"未找到预设路径: {name}")
-                return
-            removed = presets.pop(name)
+            result, msg = sm.delete_preset_path(args[2])
+            yield event.plain_result(msg)
 
-            import json
-            try:
-                self.config.preset_paths = json.dumps(presets, ensure_ascii=False)
-                yield event.plain_result(f"预设路径已删除: {name} (原路径: {removed})")
-                logger.info(f"预设路径已删除: {name} (原路径: {removed})")
-            except Exception as e:
-                yield event.plain_result(f"删除预设路径失败: {e}")
+        # ── /绑定路径 ──
+        elif subcmd == "路径":
+            if len(args) < 3:
+                yield event.plain_result("用法: /绑定路径 <群号> <路径名称>\n例如: /绑定路径 123456 项目A")
+                return
+            gid = args[2]
+            pname = args[3]
+            result, msg = sm.bind_group(gid, pname)
+            yield event.plain_result(msg)
+
+        # ── /解绑路径 ──
+        elif subcmd == "解绑":
+            if len(args) < 3:
+                yield event.plain_result("用法: /解绑路径 <群号>")
+                return
+            result, msg = sm.unbind_group(args[2])
+            yield event.plain_result(msg)
+
+        # ── /绑定列表 ──
+        elif subcmd == "绑定":
+            bindings = sm.list_group_bindings()
+            if not bindings:
+                yield event.plain_result("当前无绑定关系\n\n用法: /绑定路径 <群号> <路径名称>")
+                return
+            msg = "=== 群绑定列表 ===\n"
+            for b in bindings:
+                msg += f"  群 {b['group_id']} → {b['name']} ({b['remote_path']}) [{b['bound_at']}]\n"
+            yield event.plain_result(msg)
 
         else:
-            yield event.plain_result(f"未知子命令: {subcmd}\n可用: list(默认) / 添加 / 删除")
+            yield event.plain_result(
+                f"未知子命令: {subcmd}\n"
+                "可用: /预设路径 列表/添加/删除\n"
+                "      /绑定路径 <群号> <名称>\n"
+                "      /解绑路径 <群号>\n"
+                "      /绑定列表"
+            )

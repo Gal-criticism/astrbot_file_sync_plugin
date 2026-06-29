@@ -254,9 +254,37 @@ class FileSyncPlugin(Star):
 
     @filter.command("预设路径")
     async def preset_paths_command(self, event: AstrMessageEvent):
-        """预设路径管理"""
+        """预设路径管理 / 群绑定管理"""
         if not self._sync_cmd_handler:
             self._ensure_handlers()
+        async for result in self._sync_cmd_handler.handle_preset_paths(event):
+            yield result
+
+    @filter.command("绑定路径")
+    async def bind_path_command(self, event: AstrMessageEvent):
+        """绑定群到预设路径"""
+        if not self._sync_cmd_handler:
+            self._ensure_handlers()
+        # 在事件消息前插入子命令
+        event.message_str = "预设路径 路径 " + event.message_str.split("绑定路径", 1)[1].strip()
+        async for result in self._sync_cmd_handler.handle_preset_paths(event):
+            yield result
+
+    @filter.command("解绑路径")
+    async def unbind_path_command(self, event: AstrMessageEvent):
+        """解绑群"""
+        if not self._sync_cmd_handler:
+            self._ensure_handlers()
+        event.message_str = "预设路径 解绑 " + event.message_str.split("解绑路径", 1)[1].strip()
+        async for result in self._sync_cmd_handler.handle_preset_paths(event):
+            yield result
+
+    @filter.command("绑定列表")
+    async def bind_list_command(self, event: AstrMessageEvent):
+        """列出所有绑定关系"""
+        if not self._sync_cmd_handler:
+            self._ensure_handlers()
+        # 无法修改只读 event，改用 handler 内部参数
         async for result in self._sync_cmd_handler.handle_preset_paths(event):
             yield result
 
@@ -454,9 +482,10 @@ class FileSyncPlugin(Star):
                     })
                     continue
 
-            # 生成目标路径（传递已解析的分类 + 项目名）
+            # 生成目标路径（优先从 SQLite 获取群绑定的预设路径）
+            preset_base = self.state_manager.get_group_binding(group_id)
             target_path = self.config.generate_target_path(
-                group_name, group_id, file_name, category, project_name
+                group_name, group_id, file_name, category, project_name, preset_base
             )
             result = await self._sync_single_file(
                 group_id, target_path, file_id, file_name, file_size
