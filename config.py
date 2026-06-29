@@ -55,6 +55,12 @@ class FileSyncConfig(BaseModel):
         description="@提醒模板"
     )
 
+    # 预设路径配置
+    preset_paths: str = Field(
+        default="{}",
+        description="预设路径映射，JSON格式字符串: {\"项目A\": \"/客户项目/项目A\", \"项目B\": \"/个人项目/项目B\"}"
+    )
+
     @validator("sync_time_points", pre=True)
     def validate_sync_time_points(cls, v):
         """验证时间点格式"""
@@ -97,6 +103,46 @@ class FileSyncConfig(BaseModel):
         except (json.JSONDecodeError, ValueError):
             pass
         return {}
+
+    def get_preset_paths(self) -> dict:
+        """获取解析后的预设路径映射"""
+        import json
+        raw = self.preset_paths
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return {}
+
+    def get_preset_path(self, project_name: str) -> Optional[str]:
+        """根据项目名获取对应的预设路径
+
+        匹配策略：
+        1. 精确匹配 → 直接返回
+        2. 文件名包含预设 key → 返回对应值
+        3. 未匹配 → None（走回退路径）
+        """
+        if not project_name:
+            return None
+        presets = self.get_preset_paths()
+        if not presets:
+            return None
+        # 精确匹配
+        if project_name in presets:
+            return presets[project_name]
+        # 包含匹配（如 "项目A-子项目" 包含 "项目A"）
+        for key, path in sorted(presets.items(), key=lambda x: -len(x[0])):
+            if key in project_name:
+                return path
+        return None
+
+    def have_preset_paths(self) -> bool:
+        """是否有预设路径配置"""
+        return len(self.get_preset_paths()) > 0
 
     def get_category_subdir(self, category: str) -> str:
         """根据分类返回云盘子目录名
@@ -170,38 +216,58 @@ class FileSyncConfig(BaseModel):
         return filename.rsplit(".", 1)[-1].lower()
 
     def generate_target_path(self, group_name: str, group_id: str, filename: str,
-                            category: Optional[str] = None) -> str:
+                            category: Optional[str] = None,
+                            project_name: Optional[str] = None) -> str:
         """根据模板生成目标路径
 
-        新目录分级：
+        优先使用预设路径：
+        - 匹配到 → {预设路径}/{分类}[/工程]/{文件名}
+        - 未匹配 → {base_path}/{group_name}_{group_id}/{项目名}/{分类}[/工程]/{文件名}
+
+        目录分级：
         项目名称/
         ├── 成片/
-        │   └── 工程/      (成片-工程后缀)
+        │   └── 工程/
         ├── 素材/
         ├── 音频/
-        │   └── 工程/      (音频-工程后缀)
+        │   └── 工程/
         ├── 字幕/
         └── 数据组测试/
-
-        路径格式: {base_path}/{group_name}_{group_id}/{项目名}/{分类}[/工程]/
-
-        Args:
-            group_name: 群名称
-            group_id: 群号
-            filename: 文件名
-            category: 已解析的分类（可选，避免重复解析）
         """
         from .services.naming_validator import NamingValidator
 
         if category is None:
             category = self._extract_category_from_filename(filename)
 
+        # 解析文件命名的完整结构化信息
+        naming_info = None
         if category:
-            # 使用 NamingValidator 解析完整路径层级
             validator = NamingValidator()
-            result = validator.parse(filename)
-            subdir = validator.get_target_subdir(result)
+            naming_info = validator.parse(filename)
+            if project_name is None:
+                project_name = naming_info.project_name
+
+        # 尝试匹配预设路径
+        if category and project_name:
+            preset_base = self.get_preset_path(project_name)
+            if preset_base:
+                preset_base = preset_base.rstrip("/")
+                subdir = validator.get_target_subdir(naming_info)
+                # 去掉项目名层级（预设路径已包含）
+                parts = subdir.split("/", 1)
+                inner = parts[1] if len(parts) > 1 else ""
+                if inner:
+                    return f"{preset_base}/{inner}/{filename}"
+                else:
+                    return f"{preset_base}/{filename}"
+
+        # 回退：使用 base_path + group 格式
+        if category and naming_info:
+            validator = NamingValidator()
+            subdir = validator.get_target_subdir(naming_info)
             path = f"{group_name}_{group_id}/{subdir}"
+        elif category:
+            path = f"{group_name}_{group_id}/{category}"
         else:
             file_type = self.get_file_type(filename)
             path = self.path_template.format(

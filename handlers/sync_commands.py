@@ -120,3 +120,69 @@ class SyncCommandHandler:
                 msg += f"{api_name}: 不可用 ({str(e)[:80]})\n"
 
         yield event.plain_result(msg)
+
+    async def handle_preset_paths(self, event):
+        """预设路径管理命令
+
+        用法:
+          /预设路径                — 列出所有预设路径
+          /预设路径 添加 <项目名> <路径>  — 添加或修改预设路径
+          /预设路径 删除 <项目名>         — 删除预设路径
+        """
+        if not self.config:
+            yield event.plain_result("配置未初始化")
+            return
+
+        args = event.message_str.strip().split()
+        subcmd = args[1] if len(args) > 1 else "list"
+        presets = self.config.get_preset_paths()
+
+        if subcmd == "list":
+            if not presets:
+                yield event.plain_result("当前未配置任何预设路径\n\n用法: /预设路径 添加 <项目名> <路径>")
+                return
+            msg = "=== 预设路径 ===\n"
+            for name, path in presets.items():
+                msg += f"  {name} → {path}\n"
+            msg += "\n用法: /预设路径 添加 <项目名> <路径>\n"
+            msg += "      /预设路径 删除 <项目名>"
+            yield event.plain_result(msg)
+
+        elif subcmd == "添加":
+            if len(args) < 4:
+                yield event.plain_result("用法: /预设路径 添加 <项目名> <路径>\n例如: /预设路径 添加 项目A /客户项目/项目A")
+                return
+            name = args[2]
+            path = args[3]
+            path = "/" + path.lstrip("/")
+            presets[name] = path
+
+            # 更新配置
+            import json
+            try:
+                self.config.preset_paths = json.dumps(presets, ensure_ascii=False)
+                yield event.plain_result(f"预设路径已更新: {name} → {path}")
+                logger.info(f"预设路径已更新: {name} → {path}")
+            except Exception as e:
+                yield event.plain_result(f"更新预设路径失败: {e}")
+
+        elif subcmd == "删除":
+            if len(args) < 3:
+                yield event.plain_result("用法: /预设路径 删除 <项目名>")
+                return
+            name = args[2]
+            if name not in presets:
+                yield event.plain_result(f"未找到预设路径: {name}")
+                return
+            removed = presets.pop(name)
+
+            import json
+            try:
+                self.config.preset_paths = json.dumps(presets, ensure_ascii=False)
+                yield event.plain_result(f"预设路径已删除: {name} (原路径: {removed})")
+                logger.info(f"预设路径已删除: {name} (原路径: {removed})")
+            except Exception as e:
+                yield event.plain_result(f"删除预设路径失败: {e}")
+
+        else:
+            yield event.plain_result(f"未知子命令: {subcmd}\n可用: list(默认) / 添加 / 删除")

@@ -252,6 +252,14 @@ class FileSyncPlugin(Star):
         async for result in self._sync_cmd_handler.handle_sync_debug(event):
             yield result
 
+    @filter.command("预设路径")
+    async def preset_paths_command(self, event: AstrMessageEvent):
+        """预设路径管理"""
+        if not self._sync_cmd_handler:
+            self._ensure_handlers()
+        async for result in self._sync_cmd_handler.handle_preset_paths(event):
+            yield result
+
     @filter.command("诊断日志")
     async def diagnostic_logs_command(self, event: AstrMessageEvent):
         """查看诊断日志"""
@@ -384,8 +392,12 @@ class FileSyncPlugin(Star):
             upload_time_ts = file_info.get("add_time") or file_info.get("upload_time") or file_info.get("create_time", 0)
             upload_time = datetime.fromtimestamp(upload_time_ts, tz=CN_TZ) if upload_time_ts else None
 
-            # 预先解析分类（缓存，避免重复解析）
+            # 预先解析分类和项目名（缓存，避免重复解析）
             category = self.config._extract_category_from_filename(file_name)
+            project_name = None
+            if category and self.naming_validator:
+                parsed = self.naming_validator.parse(file_name)
+                project_name = parsed.project_name
 
             # ── 过滤 1: 文件类型 ──
             if not self.config.is_file_type_allowed(file_name):
@@ -442,9 +454,9 @@ class FileSyncPlugin(Star):
                     })
                     continue
 
-            # 生成目标路径（传递已解析的分类）
+            # 生成目标路径（传递已解析的分类 + 项目名）
             target_path = self.config.generate_target_path(
-                group_name, group_id, file_name, category
+                group_name, group_id, file_name, category, project_name
             )
             result = await self._sync_single_file(
                 group_id, target_path, file_id, file_name, file_size
