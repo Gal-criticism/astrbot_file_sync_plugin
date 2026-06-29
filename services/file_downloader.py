@@ -1,6 +1,7 @@
 """QQ群文件下载服务
 
-从 QQ 群文件 API 下载文件到本地临时目录，支持流式下载、断点续传。
+从 QQ 群文件 API 下载文件到本地临时目录，支持流式下载。
+返回细化失败原因的 (success, local_path, error_stage, error_detail)。
 """
 
 import time
@@ -36,7 +37,7 @@ class FileDownloader:
         file_id: str,
         file_name: str,
         file_size: int
-    ) -> Tuple[bool, Optional[str]]:
+    ) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
         """下载群文件到本地临时目录
 
         Args:
@@ -46,14 +47,16 @@ class FileDownloader:
             file_size: 预期文件大小（字节）
 
         Returns:
-            (success, local_path) - 成功返回 (True, 临时文件路径)，失败返回 (False, None)
+            (success, local_path, error_stage, error_detail)
+            - success=True → local_path 是临时文件路径
+            - success=False → error_stage + error_detail 描述失败原因
         """
         logger.info(f"[DOWNLOAD] 开始下载: {file_name} (ID: {file_id}, 大小: {file_size / (1024*1024):.1f} MB)")
 
         # 获取下载链接
         file_url = await self.get_file_url(group_id, file_id)
         if not file_url:
-            return False, None
+            return False, None, "download_no_url", f"无法获取下载链接: file_id={file_id}"
 
         # 创建临时目录
         temp_dir = Path(tempfile.gettempdir()) / "file_sync"
@@ -92,10 +95,10 @@ class FileDownloader:
 
         except httpx.HTTPStatusError as e:
             logger.error(f"[DOWNLOAD] HTTP 状态错误: {e.response.status_code}")
-            return False, None
+            return False, None, "download_http_error", f"HTTP {e.response.status_code}"
         except httpx.HTTPError as e:
             logger.error(f"[DOWNLOAD] HTTP 错误: {type(e).__name__}: {e}")
-            return False, None
+            return False, None, "download_network_error", f"{type(e).__name__}: {e}"
 
         elapsed = time.time() - start_time
         speed = downloaded_size / elapsed / 1024 / 1024 if elapsed > 0 else 0
@@ -104,7 +107,7 @@ class FileDownloader:
         # 校验下载完整性
         if not local_path.exists():
             logger.error(f"[DOWNLOAD] 下载的文件不存在: {local_path}")
-            return False, None
+            return False, None, "download_file_missing", f"文件未写入: {local_path}"
 
         actual_size = local_path.stat().st_size
         if actual_size != file_size:
@@ -117,9 +120,10 @@ class FileDownloader:
                 local_path.unlink()
             except Exception:
                 pass
-            return False, None
+            return False, None, "download_size_mismatch",
+            f"预期 {file_size} 字节, 实际 {actual_size} 字节"
 
-        return True, str(local_path)
+        return True, str(local_path), None, None
 
     @staticmethod
     def cleanup(local_path: Optional[str]):

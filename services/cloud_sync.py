@@ -7,7 +7,7 @@
 import time
 import os
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from urllib.parse import quote
 
 import httpx
@@ -222,7 +222,7 @@ class CloudSyncService:
     # ===== 核心：文件上传 =====
 
     def upload_file(self, local_path: str, remote_path: str,
-                    file_size: int = 0, max_retries: int = 3) -> bool:
+                    file_size: int = 0, max_retries: int = 3) -> Tuple[bool, Optional[str], Optional[str]]:
         """上传文件到 NextCloud（统一入口，直接上传）
 
         Args:
@@ -232,12 +232,12 @@ class CloudSyncService:
             max_retries: 最大重试次数
 
         Returns:
-            是否上传成功
+            (success, error_stage, error_detail)
         """
         return self.upload_file_direct(local_path, remote_path, file_size, max_retries)
 
     def upload_file_direct(self, local_path: str, remote_path: str,
-                           file_size: int = 0, max_retries: int = 3) -> bool:
+                           file_size: int = 0, max_retries: int = 3) -> Tuple[bool, Optional[str], Optional[str]]:
         """WebDAV PUT 直接上传文件（支持大文件流式传输）
 
         Args:
@@ -245,6 +245,11 @@ class CloudSyncService:
             remote_path: 远程目标路径
             file_size: 文件大小（字节）
             max_retries: 最大重试次数
+
+        Returns:
+            (success, error_stage, error_detail)
+            - success=True → 上传成功
+            - success=False → error_stage 标识阶段，error_detail 描述原因
         """
         # 确保 remote_path 以 / 开头
         if not remote_path.startswith("/"):
@@ -257,7 +262,7 @@ class CloudSyncService:
         # 检查本地文件
         if not os.path.exists(local_path):
             logger.error(f"[UPLOAD] 本地文件不存在: {local_path}")
-            return False
+            return False, "upload_local_missing", f"文件不存在: {local_path}"
 
         actual_size = os.path.getsize(local_path)
         logger.info(f"[UPLOAD] 本地文件实际大小: {actual_size} 字节 ({actual_size / (1024*1024):.2f} MB)")
@@ -275,11 +280,11 @@ class CloudSyncService:
                 # 确保目录存在
                 if "/" not in remote_path:
                     logger.error(f"[UPLOAD] 远程路径格式无效: {remote_path}")
-                    return False
+                    return False, "upload_mkdir_failed", f"路径格式无效: {remote_path}"
                 dir_path = remote_path.rsplit("/", 1)[0]
                 if dir_path and not self.ensure_directory_exists(dir_path):
                     logger.error(f"[UPLOAD] 创建目录失败: {dir_path}")
-                    return False
+                    return False, "upload_mkdir_failed", f"创建目录失败: {dir_path}"
 
                 # 上传文件 (WebDAV PUT)
                 encoded_remote_path = quote(remote_path, safe="/")
@@ -301,7 +306,7 @@ class CloudSyncService:
                             f"[UPLOAD] 上传成功: {remote_path} "
                             f"(状态码: {response.status_code}, 耗时: {elapsed:.1f}s, 速度: {speed:.2f} MB/s)"
                         )
-                        return True
+                        return True, None, None
                     else:
                         logger.error(
                             f"[UPLOAD] 上传失败: 状态码 {response.status_code}, "
@@ -310,32 +315,33 @@ class CloudSyncService:
                         if attempt < max_retries - 1:
                             time.sleep(10)
                             continue
-                        return False
+                        return False, "upload_http_error",
+                        f"HTTP {response.status_code}: {response.text[:100]}"
 
             except httpx.TimeoutException:
                 logger.error(f"[UPLOAD] 上传超时 (第 {attempt + 1} 次)")
                 if attempt < max_retries - 1:
                     time.sleep(30)
                     continue
-                return False
+                return False, "upload_timeout",
+                f"超时 ({timeout}s), 第 {attempt + 1}/{max_retries} 次"
             except httpx.HTTPError as e:
                 logger.error(f"[UPLOAD] HTTP 错误: {type(e).__name__}: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(10)
                     continue
-                return False
+                return False, "upload_network_error", f"{type(e).__name__}: {e}"
             except ConnectionError as e:
                 logger.error(f"[UPLOAD] 连接错误: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(10)
                     continue
-                return False
+                return False, "upload_network_error", f"ConnectionError: {e}"
             except Exception as e:
                 logger.error(f"[UPLOAD] 未知错误: {type(e).__name__}: {e}", exc_info=True)
-                return False
+                return False, "upload_unknown", f"{type(e).__name__}: {e}"
 
-        logger.error(f"[UPLOAD] 所有重试都失败了: {remote_path}")
-        return False
+        return False, "upload_unknown", "所有重试均已失败"
 
     # ===== 文件下载 =====
 

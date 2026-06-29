@@ -432,11 +432,11 @@ class FileSyncPlugin(Star):
             target_path = self.config.generate_target_path(
                 group_name, group_id, file_name, category
             )
-            success = await self._sync_single_file(
+            result = await self._sync_single_file(
                 group_id, target_path, file_id, file_name, file_size
             )
 
-            if success:
+            if result.success:
                 new_files_count += 1
                 record = SyncRecord(
                     file_id=file_id, file_name=file_name, file_size=file_size,
@@ -450,12 +450,20 @@ class FileSyncPlugin(Star):
                         file_id, file_name, file_size, group_id, target_path,
                         self.config.retry_delay_seconds
                     )
+                # 细化的失败日志：包含阶段、详情、命名分析
                 self.state_manager.add_diagnostic_log("sync_fail", f"同步失败: {file_name}", {
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "file_size": file_size,
-                    "group_id": group_id,
-                    "target_path": target_path,
+                    "file_id": result.file_id,
+                    "file_name": result.file_name,
+                    "file_size": result.file_size,
+                    "group_id": result.group_id,
+                    "target_path": result.target_path,
+                    "failed_stage": result.failed_stage,
+                    "failed_detail": result.failed_detail,
+                    "naming_category": result.naming_category,
+                    "naming_project": result.naming_project,
+                    "naming_version": result.naming_version,
+                    "naming_valid": result.naming_is_valid,
+                    "naming_error": result.naming_error,
                 })
 
         self.state_manager.update_last_sync_time(group_id, sync_time)
@@ -483,8 +491,8 @@ class FileSyncPlugin(Star):
         )
 
     async def _sync_single_file(self, group_id: str, target_path: str,
-                                 file_id: str, file_name: str, file_size: int) -> bool:
-        """同步单个文件（委托给 SyncExecutor）"""
+                                 file_id: str, file_name: str, file_size: int):
+        """同步单个文件（委托给 SyncExecutor），返回 SyncResult"""
         from .services.sync_executor import SyncExecutor
         executor = SyncExecutor(self)
         return await executor.sync_single_file(
@@ -499,11 +507,20 @@ class FileSyncPlugin(Star):
 
     async def _notify_retry_failed(self, item: dict):
         """通知用户文件重试同步失败"""
+        naming_info = ""
+        if item.get("naming_category"):
+            naming_info = f"\n命名分类: {item['naming_category']}"
+            if item.get("naming_project"):
+                naming_info += f"\n所属项目: {item['naming_project']}"
+            if item.get("naming_error"):
+                naming_info += f"\n命名问题: {item['naming_error']}"
         msg = (
             f"[文件同步] 重试失败通知\n"
             f"文件: {item['file_name']}\n"
             f"群号: {item['group_id']}\n"
-            f"已尝试 {item['attempts']} 次，已达上限，不再重试"
+            f"已尝试 {item['attempts']} 次，已达上限，不再重试\n"
+            f"失败原因: {item.get('failed_stage', '未知')} - {item.get('failed_detail', '')}"
+            f"{naming_info}"
         )
         logger.warning(msg)
         try:
@@ -535,14 +552,24 @@ class FileSyncPlugin(Star):
                 logger.warning(f"文件 {item['file_name']} 重试次数超限，移出队列")
                 self.state_manager.remove_from_retry_queue(item["file_id"])
                 await self._notify_retry_failed(item)
+                # 记录最终失败日志
+                self.state_manager.add_diagnostic_log("retry_exhausted", f"重试耗尽: {item['file_name']}", {
+                    "file_id": item.get("file_id"),
+                    "file_name": item.get("file_name"),
+                    "file_size": item.get("file_size"),
+                    "group_id": item.get("group_id"),
+                    "attempts": item.get("attempts"),
+                    "failed_stage": item.get("failed_stage", "retry_exhausted"),
+                    "failed_detail": item.get("failed_detail", "重试次数达上限"),
+                })
                 continue
 
-            success = await self._sync_single_file(
+            result = await self._sync_single_file(
                 item["group_id"], item["target_path"],
                 item["file_id"], item["file_name"], item["file_size"]
             )
 
-            if success:
+            if result.success:
                 logger.info(f"重试成功: {item['file_name']}")
                 self.state_manager.remove_from_retry_queue(item["file_id"])
                 record = SyncRecord(
@@ -553,3 +580,9 @@ class FileSyncPlugin(Star):
                 self.state_manager.add_sync_record(record)
             else:
                 logger.warning(f"重试失败: {item['file_name']}")
+                # 将失败详情暂存到 item 中供下次重试通知使用
+                item["failed_stage"] = result.failed_stage
+                item["failed_detail"] = result.failed_detail
+                item["naming_category"] = result.naming_category
+                item["naming_project"] = result.naming_project
+                item["naming_error"] = result.naming_error
