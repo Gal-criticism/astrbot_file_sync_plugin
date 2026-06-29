@@ -173,9 +173,17 @@ class FileSyncConfig(BaseModel):
                             category: Optional[str] = None) -> str:
         """根据模板生成目标路径
 
-        新行为：优先按文件分类生成子目录
-        - 如文件 "项目A-成片v1.mp4" → {base_path}/{group_name}_{group_id}/成片/
-        - 如无法识别分类 → 回退到 {file_type} 子目录
+        新目录分级：
+        项目名称/
+        ├── 成片/
+        │   └── 工程/      (成片-工程后缀)
+        ├── 素材/
+        ├── 音频/
+        │   └── 工程/      (音频-工程后缀)
+        ├── 字幕/
+        └── 数据组测试/
+
+        路径格式: {base_path}/{group_name}_{group_id}/{项目名}/{分类}[/工程]/
 
         Args:
             group_name: 群名称
@@ -183,11 +191,17 @@ class FileSyncConfig(BaseModel):
             filename: 文件名
             category: 已解析的分类（可选，避免重复解析）
         """
+        from .services.naming_validator import NamingValidator
+
         if category is None:
             category = self._extract_category_from_filename(filename)
 
         if category:
-            path = f"{group_name}_{group_id}/{category}"
+            # 使用 NamingValidator 解析完整路径层级
+            validator = NamingValidator()
+            result = validator.parse(filename)
+            subdir = validator.get_target_subdir(result)
+            path = f"{group_name}_{group_id}/{subdir}"
         else:
             file_type = self.get_file_type(filename)
             path = self.path_template.format(

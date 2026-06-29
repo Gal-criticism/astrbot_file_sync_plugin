@@ -53,7 +53,7 @@ CATEGORY_EXTENSIONS: Dict[str, List[str]] = {
     "数据组测试": ["*"],  # 无限制
 }
 
-# 分类 → 云盘存储子目录名
+# 分类 → 云盘存储子目录名（一级分类目录）
 CATEGORY_SUBDIRS: Dict[str, str] = {
     "封面": "封面",
     "成片": "成片",
@@ -62,6 +62,24 @@ CATEGORY_SUBDIRS: Dict[str, str] = {
     "字幕": "字幕",
     "数据组测试": "数据组测试",
 }
+
+# 工程后缀识别正则：匹配 工程 / 工程v1 / 工程-PR2022 / 工程v2-PR 等
+ENGINEERING_PATTERN = re.compile(
+    r'^工程(v\d+)?(-[a-zA-Z0-9]+)?$',  # 工程、工程v1、工程-PR2022、工程v2-PR
+    re.IGNORECASE
+)
+
+# 需要二级"工程"子目录的分类
+CATEGORIES_WITH_ENGINEERING_SUBDIR = {"成片", "音频"}
+
+
+def _has_engineering_suffix(suffixes: List[str]) -> bool:
+    """检查后缀列表中是否包含工程标记"""
+    for s in suffixes:
+        s_stripped = s.strip()
+        if ENGINEERING_PATTERN.match(s_stripped):
+            return True
+    return False
 
 # 版本号正则：匹配 v1, v2, v99 等
 VERSION_PATTERN = re.compile(r'v(\d+)')
@@ -160,10 +178,45 @@ class NamingValidator:
         return result.category
 
     def get_target_subdir(self, result: NamingResult) -> str:
-        """根据分类结果返回云盘子目录名"""
-        if result.category and result.category in self._subdirs:
-            return self._subdirs[result.category]
-        return "其他"
+        """根据分类结果返回云盘子目录名
+
+        新规范目录层级：
+        - 项目名称/
+          - 成片/
+            - 工程/      # 成片-工程或成片v1-工程后缀
+          - 素材/
+          - 音频/
+            - 工程/      # 音频-工程后缀
+          - 字幕/
+          - 数据组测试/
+
+        返回相对于群文件夹的子路径，如 "项目A/成片/工程"
+        """
+        category = result.category
+        project_name = result.project_name
+        if not category:
+            return "其他"
+
+        # 一级分类目录
+        segments = [category]
+
+        # 判断是否属于工程子目录
+        is_engineering = result.is_engineering or _has_engineering_suffix(result.suffixes)
+        if is_engineering and category in CATEGORIES_WITH_ENGINEERING_SUBDIR:
+            segments.append("工程")
+
+        # 拼入项目名作为最顶层
+        if project_name and project_name != category:
+            segments.insert(0, project_name)
+        elif project_name and project_name == category:
+            # deprecated 格式用文件名后半段作为项目名
+            if result.filename and self.DEPRECATED_SEPARATOR in result.filename:
+                parts = result.filename.split(self.DEPRECATED_SEPARATOR, 1)
+                if len(parts) >= 2 and parts[1].strip():
+                    stem = parts[1].rsplit(".", 1)[0] if "." in parts[1] else parts[1]
+                    segments.insert(0, stem.strip())
+
+        return "/".join(segments)
 
     def format_categories(self) -> str:
         """格式化分类列表为展示字符串"""
@@ -235,8 +288,24 @@ class NamingValidator:
             is_valid=len(errors) == 0 and category is not None,
             category=category, project_name=project_name,
             version=version, suffixes=suffixes, extension=extension,
+            is_engineering=_has_engineering_suffix(suffixes),
             **base_args,
         )
+
+        # 解析工程版本号和软件版本
+        if result.is_engineering:
+            for s in suffixes:
+                s_stripped = s.strip()
+                m = ENGINEERING_PATTERN.match(s_stripped)
+                if m:
+                    ver_str = m.group(1)  # v2 → "v2"
+                    if ver_str:
+                        result.engineering_version = int(ver_str.lstrip('v').lstrip('V'))
+                    sw = m.group(2)  # -PR2022
+                    if sw:
+                        result.software_version = sw.lstrip('-')
+                    break
+
         for e in errors:
             result.add_error(e["type"], e["reason"])
 
@@ -296,7 +365,9 @@ class NamingValidator:
             is_valid=len(errors) == 0 and category is not None,
             category=category, project_name=category_keyword,
             version=version, suffixes=name_suffixes, extension=extension,
-            deprecated_separator=True, **base_args,
+            deprecated_separator=True,
+            is_engineering=_has_engineering_suffix(name_suffixes),
+            **base_args,
         )
         for e in errors:
             result.add_error(e["type"], e["reason"])

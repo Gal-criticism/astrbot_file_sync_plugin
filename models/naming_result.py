@@ -26,6 +26,11 @@ class NamingResult:
     extension: Optional[str] = None         # 文件扩展名（不含点）
     deprecated_separator: bool = False       # 是否使用了旧的 -- 分隔符
 
+    # ── 工程文件标记 ──
+    is_engineering: bool = False             # 是否为工程文件（后缀包含 工程/v1/PR2022 等）
+    engineering_version: Optional[int] = None # 工程版本号（如 工程v2 → 2）
+    software_version: Optional[str] = None   # 软件版本标注（如 PR2022）
+
     # ── 多错误收集 ──
     errors: List[Dict[str, str]] = field(default_factory=list)
     # 每项: {"type": "format_error|extension_mismatch|category_not_found|...",
