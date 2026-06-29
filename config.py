@@ -2,6 +2,19 @@ from pydantic import BaseModel, Field, validator
 from typing import List, Optional
 from datetime import datetime
 
+# 六大标准分类的默认扩展名映射
+DEFAULT_CATEGORY_EXTENSIONS = {
+    "封面": ["png", "jpg", "jpeg", "psd"],
+    "成片": ["mp4"],
+    "素材": ["png", "jpg", "jpeg", "psd", "mp4", "mov", "avi", "webm", "gif", "svg",
+             "ai", "eps", "cdr", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+             "zip", "rar", "7z", "txt"],
+    "音频": ["wav", "flac", "mp3", "aac", "ogg", "wma", "m4a"],
+    "字幕": ["ass", "srt", "vtt", "ssa"],
+    "数据组测试": ["*"],
+}
+
+
 class FileSyncConfig(BaseModel):
     """插件配置模型"""
     sync_enabled: bool = Field(default=True, description="是否启用文件同步功能")
@@ -26,12 +39,16 @@ class FileSyncConfig(BaseModel):
         description="是否启用文件名检查"
     )
     filename_template: str = Field(
-        default="{category}--{name}",
-        description="文件名模板格式"
+        default="{project_name}-{category}v{version}-{suffix}.{ext}",
+        description="文件名模板格式（新规范）"
     )
     filename_categories: str = Field(
         default="{}",
-        description="分类白名单（分组），JSON格式字符串，如 {\"设计类\": [\"素材\", \"成品\"]}"
+        description="[deprecated] 旧分类白名单（分组），JSON格式字符串。请改用 naming_extra_categories"
+    )
+    naming_extra_categories: str = Field(
+        default="{}",
+        description="自定义扩展分类，JSON格式字符串，如 {\"我的分类\": {\"extensions\": [\"pdf\", \"doc\"], \"keywords\": [\"我的\"]}}"
     )
     filename_notify_template: Optional[str] = Field(
         default=None,
@@ -54,7 +71,7 @@ class FileSyncConfig(BaseModel):
         return validated
 
     def get_filename_categories(self) -> dict:
-        """获取解析后的分类白名单"""
+        """获取解析后的分类白名单（兼容旧 API）"""
         import json
         raw = self.filename_categories
         if not raw:
@@ -66,6 +83,41 @@ class FileSyncConfig(BaseModel):
         except (json.JSONDecodeError, ValueError):
             pass
         return {}
+
+    def get_naming_extra_categories(self) -> dict:
+        """获取解析后的自定义扩展分类"""
+        import json
+        raw = self.naming_extra_categories
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return {}
+
+    def get_category_subdir(self, category: str) -> str:
+        """根据分类返回云盘子目录名
+
+        六大标准分类：封面 / 成片 / 素材 / 音频 / 字幕 / 数据组测试
+        """
+        standard_subdirs = {
+            "封面": "封面",
+            "成片": "成片",
+            "素材": "素材",
+            "音频": "音频",
+            "字幕": "字幕",
+            "数据组测试": "数据组测试",
+        }
+        if category in standard_subdirs:
+            return standard_subdirs[category]
+        # 自定义分类
+        extra = self.get_naming_extra_categories()
+        if category in extra:
+            return category
+        return "其他"
 
     def has_time_points(self) -> bool:
         """是否配置了时间点"""
@@ -118,16 +170,51 @@ class FileSyncConfig(BaseModel):
         return filename.rsplit(".", 1)[-1].lower()
 
     def generate_target_path(self, group_name: str, group_id: str, filename: str) -> str:
-        """根据模板生成目标路径"""
-        file_type = self.get_file_type(filename)
-        path = self.path_template.format(
-            group_name=group_name,
-            group_id=group_id,
-            file_type=file_type
-        )
-        # 清理特殊字符
+        """根据模板生成目标路径
+
+        新行为：优先按文件分类生成子目录
+        - 如文件 "项目A-成片v1.mp4" → {base_path}/{group_name}_{group_id}/成片/
+        - 如无法识别分类 → 回退到 {file_type} 子目录
+        """
+        # 尝试从文件名提取分类
+        category = self._extract_category_from_filename(filename)
+        if category:
+            path = f"{group_name}_{group_id}/{category}"
+        else:
+            file_type = self.get_file_type(filename)
+            path = self.path_template.format(
+                group_name=group_name,
+                group_id=group_id,
+                file_type=file_type
+            )
         path = path.replace(" ", "_")
         return f"{self.base_path}/{path}"
+
+    @staticmethod
+    def _extract_category_from_filename(filename: str) -> Optional[str]:
+        """从文件名中提取标准分类（用于目标路径生成）"""
+        from .services.naming_validator import CATEGORY_KEYWORD_MAP
+        stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+
+        # 检查旧格式 --
+        if "--" in stem:
+            parts = stem.split("--", 1)
+            keyword = parts[0].strip()
+            if keyword in CATEGORY_KEYWORD_MAP:
+                return CATEGORY_KEYWORD_MAP[keyword]
+
+        # 检查新格式 -
+        parts = [p.strip() for p in stem.split("-") if p.strip()]
+        for i in range(len(parts) - 1, -1, -1):
+            part = parts[i]
+            # 去掉版本号
+            import re
+            part_clean = re.sub(r'v\d+', '', part).strip('-')
+            if part_clean in CATEGORY_KEYWORD_MAP:
+                return CATEGORY_KEYWORD_MAP[part_clean]
+
+        return None
+
 
 def validate_config(config: dict) -> FileSyncConfig:
     """验证并返回配置对象"""

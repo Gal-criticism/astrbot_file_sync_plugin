@@ -1,4 +1,9 @@
-import httpx
+"""NextCloud WebDAV 同步服务
+
+直接调用 NextCloud WebDAV API（PROPFIND、MKCOL、PUT），
+支持流式上传、目录管理、远程文件列表。
+"""
+
 import time
 import json
 import os
@@ -6,27 +11,29 @@ from pathlib import Path
 from typing import Optional, List
 from urllib.parse import quote
 
+import httpx
+
 from ..config import FileSyncConfig
 from ..utils.rename import generate_unique_filename
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import logger
 
 
 def _build_dav_url(nextcloud_url: str, username: str) -> str:
     """构建 WebDAV URL
+
     支持格式:
-    - https://example.com/remote.php/dav/files/username -> https://example.com/remote.php/dav/files/username
-    - https://example.com -> https://example.com/remote.php/dav/files/username
+    - https://example.com/remote.php/dav/files/username → 保持不变
+    - https://example.com → 自动拼接 /remote.php/dav/files/username
     """
     url = nextcloud_url.rstrip("/")
     if "/remote.php/dav/files/" in url:
-        # 已经包含完整路径，但可能用户名不对，修正之
         base = url.split("/remote.php/dav/files/")[0]
         return f"{base}/remote.php/dav/files/{username}"
     return f"{url}/remote.php/dav/files/{username}"
 
 
 class CloudSyncService:
-    """NextCloud同步服务 - 使用 httpx 直接调用 WebDAV API"""
+    """NextCloud 同步服务 - 使用 httpx 直接调用 WebDAV API"""
 
     def __init__(self, config: FileSyncConfig):
         self.config = config
@@ -35,9 +42,10 @@ class CloudSyncService:
         self._password = config.nextcloud_password
         self._upload_progress_dir = Path("upload_progress")
         self._upload_progress_dir.mkdir(exist_ok=True)
-        # 提取 DAV 路径前缀，用于 PROPFIND 响应的 href 截取相对路径
+
         from urllib.parse import urlparse
         self._dav_path = urlparse(self._dav_url).path.rstrip('/')
+
         logger.info(f"NextCloud WebDAV URL: {self._dav_url}")
         self._test_connection()
 
@@ -51,7 +59,7 @@ class CloudSyncService:
                 else:
                     logger.warning(f"NextCloud WebDAV 连接返回状态码: {response.status_code}")
         except Exception as e:
-            logger.error(f"连接NextCloud失败: {e}")
+            logger.error(f"连接 NextCloud 失败: {e}")
 
     def _get_client(self, timeout: int = 300) -> httpx.Client:
         """获取 httpx 客户端"""
@@ -61,27 +69,24 @@ class CloudSyncService:
             timeout=timeout,
         )
 
+    # ===== 目录与文件检查 =====
+
     def _path_exists(self, path: str) -> bool:
         """通过 WebDAV PROPFIND 检查路径是否存在"""
-        # 确保 path 以 / 开头，避免 URL 拼接错误
         if not path.startswith("/"):
             path = "/" + path
         try:
-            # URL-encode path 以处理特殊字符
             encoded_path = quote(path, safe="/")
             url = f"{self._dav_url}{encoded_path}"
-            logger.debug(f"检查路径是否存在: {url}")
             with self._get_client() as client:
                 response = client.request("PROPFIND", url, headers={"Depth": "0"})
-                exists = response.status_code == 207
-                logger.debug(f"路径 {path} 存在: {exists}")
-                return exists
+                return response.status_code == 207
         except Exception as e:
-            logger.warning(f"检查路径存在时发生异常 {path}: {type(e).__name__}: {e}")
+            logger.warning(f"检查路径存在时异常 {path}: {type(e).__name__}: {e}")
             return False
 
     def ensure_directory_exists(self, path: str) -> bool:
-        """确保目录存在，不存在则创建（支持多层嵌套目录）"""
+        """确保目录存在，不存在则逐层创建（支持多层嵌套目录）"""
         if not path:
             return True
 
@@ -101,7 +106,7 @@ class CloudSyncService:
                     with self._get_client() as client:
                         response = client.request("MKCOL", url)
                         if response.status_code in (201, 405):
-                            logger.info(f"目录就绪: {current_path} (状态码: {response.status_code})")
+                            logger.debug(f"目录就绪: {current_path} (状态码: {response.status_code})")
                         else:
                             logger.error(f"创建目录失败 {current_path}: 状态码 {response.status_code}")
                             return False
@@ -114,7 +119,10 @@ class CloudSyncService:
         """检查文件是否存在"""
         return self._path_exists(path)
 
-    def _extract_name_from_href(self, href: str) -> str:
+    # ===== 文件列表 =====
+
+    @staticmethod
+    def _extract_name_from_href(href: str) -> str:
         """从 href 路径末尾提取文件名/目录名，并做 URL 解码"""
         from urllib.parse import unquote
         path = href.rstrip('/')
@@ -154,7 +162,6 @@ class CloudSyncService:
                     length_match = re.search(r'<d:getcontentlength>([^<]+)</d:getcontentlength>', entry)
                     is_collection = '<d:collection' in entry
 
-                    # 跳过当前目录自身：href 去掉 _dav_path 前缀后和 remote_path 相同
                     relative = href.rstrip('/')
                     if relative.startswith(self._dav_path):
                         relative = relative[len(self._dav_path):] or '/'
@@ -174,7 +181,6 @@ class CloudSyncService:
                             "remote_path": href
                         })
 
-                # 递归遍历子目录，用相对路径
                 for subdir_rel in subdirs:
                     sub_result = self.list_remote_files(subdir_rel)
                     result.extend(sub_result)
@@ -205,27 +211,28 @@ class CloudSyncService:
                     href_match = re.search(r'<d:href>([^<]+)</d:href>', entry)
                     if href_match:
                         href = href_match.group(1)
-                        # 跳过当前目录
                         if href.rstrip('/') == base_path.rstrip('/'):
                             continue
-                        # 只取直接子目录（href 以 base_path/ 开头，且无更多层级）
                         normalized_href = href.rstrip('/')
                         normalized_base = base_path.rstrip('/')
-                        if normalized_href.startswith(normalized_base + '/') and '/' not in normalized_href[len(normalized_base) + 1:]:
+                        if (normalized_href.startswith(normalized_base + '/')
+                                and '/' not in normalized_href[len(normalized_base) + 1:]):
                             dirs.append(href.rstrip('/'))
         except Exception as e:
             logger.error(f"列出子目录异常 {base_path}: {type(e).__name__}: {e}")
         return dirs
 
+    # ===== 上传进度管理（用于断点续传元数据） =====
+
     def _get_progress_file_path(self, local_path: str, remote_path: str) -> Path:
         """获取上传进度文件路径"""
-        # 使用文件路径的 hash 作为进度文件名
         import hashlib
         key = f"{local_path}:{remote_path}"
         hash_key = hashlib.md5(key.encode()).hexdigest()
         return self._upload_progress_dir / f"{hash_key}.json"
 
-    def _save_upload_progress(self, local_path: str, remote_path: str, uploaded_bytes: int, chunk_size: int):
+    def _save_upload_progress(self, local_path: str, remote_path: str,
+                               uploaded_bytes: int, chunk_size: int):
         """保存上传进度"""
         progress_file = self._get_progress_file_path(local_path, remote_path)
         progress_data = {
@@ -238,165 +245,62 @@ class CloudSyncService:
         with open(progress_file, "w") as f:
             json.dump(progress_data, f)
 
-    def _load_upload_progress(self, local_path: str, remote_path: str) -> Optional[dict]:
-        """加载上传进度"""
-        progress_file = self._get_progress_file_path(local_path, remote_path)
-        if progress_file.exists():
-            try:
-                with open(progress_file, "r") as f:
-                    return json.load(f)
-            except Exception:
-                return None
-        return None
-
     def _clear_upload_progress(self, local_path: str, remote_path: str):
         """清除上传进度"""
         progress_file = self._get_progress_file_path(local_path, remote_path)
         if progress_file.exists():
             progress_file.unlink()
 
-    def upload_file_chunked(self, local_path: str, remote_path: str, file_size: int = 0, max_retries: int = 3) -> bool:
-        """分块上传大文件（支持断点续传）"""
-        # 确保 remote_path 以 / 开头，避免 URL 拼接错误
-        if not remote_path.startswith("/"):
-            remote_path = "/" + remote_path
-            logger.warning(f"[UPLOAD] remote_path 缺少开头的 /，已自动添加: {remote_path}")
+    # ===== 核心：文件上传 =====
 
-        logger.info(f"开始分块上传: {local_path} -> {remote_path}")
+    def upload_file(self, local_path: str, remote_path: str,
+                    file_size: int = 0, max_retries: int = 3) -> bool:
+        """上传文件到 NextCloud（统一入口）
 
-        # 检查文件大小限制（默认 10GB）
-        max_file_size = 10 * 1024 * 1024 * 1024  # 10GB
-        if file_size > max_file_size:
-            logger.error(f"文件过大: {file_size / (1024*1024*1024):.1f} GB，超过限制 {max_file_size / (1024*1024*1024):.0f} GB")
-            return False
+        自动选择上传策略：所有文件使用直接上传（WebDAV PUT）。
+        大文件（>100MB）使用更长的超时时间。
 
-        # 分块大小：10MB
-        chunk_size = 10 * 1024 * 1024
+        Args:
+            local_path: 本地文件路径
+            remote_path: 远程目标路径
+            file_size: 文件大小（字节），用于超时计算
+            max_retries: 最大重试次数
 
-        # 检查是否有未完成的上传
-        progress = self._load_upload_progress(local_path, remote_path)
-        if progress:
-            uploaded_bytes = progress["uploaded_bytes"]
-            logger.info(f"发现未完成的上传，已上传: {uploaded_bytes / (1024*1024):.1f} MB")
-        else:
-            uploaded_bytes = 0
-
-        # 确保目录存在
-        if "/" not in remote_path:
-            logger.error(f"远程路径格式无效: {remote_path}")
-            return False
-        dir_path = remote_path.rsplit("/", 1)[0]
-        if dir_path and not self.ensure_directory_exists(dir_path):
-            return False
-
-        # 计算总块数
-        total_chunks = (file_size + chunk_size - 1) // chunk_size
-        current_chunk = uploaded_bytes // chunk_size
-
-        logger.info(f"文件大小: {file_size / (1024*1024):.1f} MB, 分块大小: {chunk_size / (1024*1024):.0f} MB, 总块数: {total_chunks}")
-
-        start_time = time.time()
-
-        with open(local_path, "rb") as f:
-            # 跳过已上传的部分
-            if uploaded_bytes > 0:
-                f.seek(uploaded_bytes)
-
-            while uploaded_bytes < file_size:
-                # 计算当前块的大小
-                current_chunk_size = min(chunk_size, file_size - uploaded_bytes)
-                chunk_data = f.read(current_chunk_size)
-
-                if not chunk_data:
-                    break
-
-                # 上传当前块
-                for attempt in range(max_retries):
-                    try:
-                        # 使用 WebDAV PUT 上传分块
-                        # 注意：这里需要使用 NextCloud 的分块上传 API
-                        # 但 WebDAV 本身不支持分块上传，所以我们需要：
-                        # 1. 上传到临时文件
-                        # 2. 合并文件
-
-                        # 临时方案：直接上传整个文件（流式）
-                        # 这里我们使用流式上传，但记录进度
-                        encoded_remote_path = quote(remote_path, safe="/")
-                        chunk_url = f"{self._dav_url}{encoded_remote_path}"
-
-                        # 对于分块上传，我们需要使用不同的策略
-                        # 这里我们使用一个简化方案：直接上传整个文件
-                        # 但记录进度以便断点续传
-
-                        # 实际上，WebDAV 不支持真正的分块上传
-                        # 我们需要使用 NextCloud 的 Chunked Upload API
-                        # 但为了简化，我们使用流式上传 + 进度记录
-
-                        logger.debug(f"上传分块 {current_chunk + 1}/{total_chunks}, 大小: {current_chunk_size / (1024*1024):.1f} MB")
-
-                        # 这里我们实际上不能真正分块上传到 WebDAV
-                        # 所以我们使用一个替代方案：
-                        # 1. 对于小文件，直接上传
-                        # 2. 对于大文件，使用流式上传，但记录进度
-
-                        # 由于 WebDAV 的限制，我们只能上传整个文件
-                        # 但我们可以记录进度，以便在网络中断后重新上传
-
-                        # 更新进度
-                        uploaded_bytes += current_chunk_size
-                        self._save_upload_progress(local_path, remote_path, uploaded_bytes, chunk_size)
-
-                        # 计算进度
-                        progress_percent = (uploaded_bytes / file_size) * 100
-                        elapsed = time.time() - start_time
-                        speed = uploaded_bytes / elapsed / 1024 / 1024 if elapsed > 0 else 0
-                        logger.info(f"上传进度: {progress_percent:.1f}%, 速度: {speed:.2f} MB/s")
-
-                        break  # 成功，跳出重试循环
-
-                    except Exception as e:
-                        logger.warning(f"上传分块失败 (尝试 {attempt + 1}/{max_retries}): {e}")
-                        if attempt < max_retries - 1:
-                            time.sleep(5)
-                            continue
-                        else:
-                            # 保存进度，以便后续续传
-                            logger.error(f"上传分块失败，已保存进度")
-                            return False
-
-                current_chunk += 1
-
-        # 上传完成，清除进度文件
-        self._clear_upload_progress(local_path, remote_path)
-
-        # 由于 WebDAV 的限制，我们实际上需要上传整个文件
-        # 所以这里我们调用普通上传方法
+        Returns:
+            是否上传成功
+        """
         return self.upload_file_direct(local_path, remote_path, file_size, max_retries)
 
-    def upload_file_direct(self, local_path: str, remote_path: str, file_size: int = 0, max_retries: int = 3) -> bool:
-        """直接上传文件（不分块）"""
-        # 确保 remote_path 以 / 开头，避免 URL 拼接错误
+    def upload_file_direct(self, local_path: str, remote_path: str,
+                           file_size: int = 0, max_retries: int = 3) -> bool:
+        """WebDAV PUT 直接上传文件（支持大文件流式传输）
+
+        Args:
+            local_path: 本地文件路径
+            remote_path: 远程目标路径
+            file_size: 文件大小（字节）
+            max_retries: 最大重试次数
+        """
+        # 确保 remote_path 以 / 开头
         if not remote_path.startswith("/"):
             remote_path = "/" + remote_path
             logger.warning(f"[UPLOAD] remote_path 缺少开头的 /，已自动添加: {remote_path}")
 
-        logger.info(f"[UPLOAD] 开始直接上传: {local_path} -> {remote_path}")
+        logger.info(f"[UPLOAD] 开始上传: {local_path} -> {remote_path}")
         logger.info(f"[UPLOAD] 文件大小: {file_size} 字节 ({file_size / (1024*1024):.2f} MB)")
 
-        # 检查本地文件是否存在
+        # 检查本地文件
         if not os.path.exists(local_path):
             logger.error(f"[UPLOAD] 本地文件不存在: {local_path}")
             return False
 
-        # 获取本地文件实际大小
         actual_size = os.path.getsize(local_path)
         logger.info(f"[UPLOAD] 本地文件实际大小: {actual_size} 字节 ({actual_size / (1024*1024):.2f} MB)")
 
         for attempt in range(max_retries):
-            logger.info(f"[UPLOAD] 尝试 {attempt + 1}/{max_retries}")
+            logger.info(f"[UPLOAD] 第 {attempt + 1}/{max_retries} 次尝试")
             try:
                 # 检查远程文件是否存在，如存在则重命名
-                logger.debug(f"[UPLOAD] 检查远程文件是否存在: {remote_path}")
                 if self.file_exists(remote_path):
                     original_name = remote_path.split("/")[-1]
                     new_name = generate_unique_filename(original_name)
@@ -408,114 +312,71 @@ class CloudSyncService:
                     logger.error(f"[UPLOAD] 远程路径格式无效: {remote_path}")
                     return False
                 dir_path = remote_path.rsplit("/", 1)[0]
-                logger.debug(f"[UPLOAD] 确保目录存在: {dir_path}")
                 if dir_path and not self.ensure_directory_exists(dir_path):
                     logger.error(f"[UPLOAD] 创建目录失败: {dir_path}")
                     return False
 
-                # 上传文件 (WebDAV PUT) - 流式上传支持大文件
-                # URL-encode remote_path 以处理特殊字符（如中文、括号等）
+                # 上传文件 (WebDAV PUT)
                 encoded_remote_path = quote(remote_path, safe="/")
                 url = f"{self._dav_url}{encoded_remote_path}"
-                logger.info(f"[UPLOAD] 上传 URL: {url}")
 
-                # 根据文件大小动态调整超时时间
-                timeout = max(600, file_size // (1024 * 1024) * 15)  # 至少 10 分钟，每 MB 增加 15 秒
-                logger.info(f"[UPLOAD] 设置超时时间: {timeout} 秒")
+                # 根据文件大小动态调整超时（至少10分钟，每MB增加15秒）
+                timeout = max(600, file_size // (1024 * 1024) * 15)
+                logger.info(f"[UPLOAD] 超时设置: {timeout} 秒, URL: {url}")
 
                 start_time = time.time()
                 with self._get_client(timeout=timeout) as client:
-                    logger.debug(f"[UPLOAD] 打开本地文件: {local_path}")
                     with open(local_path, "rb") as f:
-                        logger.debug(f"[UPLOAD] 开始 PUT 请求...")
                         response = client.put(url, content=f)
                     elapsed = time.time() - start_time
 
-                    logger.info(f"[UPLOAD] 响应状态码: {response.status_code}")
-                    logger.debug(f"[UPLOAD] 响应头: {dict(response.headers)}")
-
                     if response.status_code in (201, 204):
-                        speed = file_size / elapsed / 1024 / 1024 if elapsed > 0 else 0
-                        logger.info(f"[UPLOAD] 上传成功: {remote_path} (状态码: {response.status_code}, 耗时: {elapsed:.1f}秒, 速度: {speed:.2f} MB/s)")
-                        # 清除进度文件
+                        speed = actual_size / elapsed / 1024 / 1024 if elapsed > 0 else 0
+                        logger.info(
+                            f"[UPLOAD] 上传成功: {remote_path} "
+                            f"(状态码: {response.status_code}, 耗时: {elapsed:.1f}s, 速度: {speed:.2f} MB/s)"
+                        )
                         self._clear_upload_progress(local_path, remote_path)
                         return True
                     else:
-                        logger.error(f"[UPLOAD] 上传失败: {remote_path}")
-                        logger.error(f"[UPLOAD] 状态码: {response.status_code}")
-                        logger.error(f"[UPLOAD] 响应内容: {response.text[:500]}")
-                        logger.error(f"[UPLOAD] 响应头: {dict(response.headers)}")
+                        logger.error(
+                            f"[UPLOAD] 上传失败: 状态码 {response.status_code}, "
+                            f"响应: {response.text[:200]}"
+                        )
                         if attempt < max_retries - 1:
-                            logger.info(f"[UPLOAD] 等待 10 秒后重试...")
                             time.sleep(10)
                             continue
                         return False
 
-            except httpx.TimeoutException as e:
-                elapsed = time.time() - start_time
-                logger.error(f"[UPLOAD] 上传超时 {remote_path}")
-                logger.error(f"[UPLOAD] 尝试: {attempt + 1}/{max_retries}, 耗时: {elapsed:.1f}秒")
-                logger.error(f"[UPLOAD] 超时异常: {type(e).__name__}: {e}")
+            except httpx.TimeoutException:
+                logger.error(f"[UPLOAD] 上传超时 (第 {attempt + 1} 次)")
                 if attempt < max_retries - 1:
-                    logger.info(f"[UPLOAD] 等待 30 秒后重试...")
                     time.sleep(30)
                     continue
                 return False
             except httpx.HTTPError as e:
-                logger.error(f"[UPLOAD] HTTP 错误 {remote_path}")
-                logger.error(f"[UPLOAD] 尝试: {attempt + 1}/{max_retries}")
-                logger.error(f"[UPLOAD] HTTP 异常: {type(e).__name__}: {e}")
-                logger.error(f"[UPLOAD] 请求 URL: {url}")
+                logger.error(f"[UPLOAD] HTTP 错误: {type(e).__name__}: {e}")
                 if attempt < max_retries - 1:
-                    logger.info(f"[UPLOAD] 等待 10 秒后重试...")
                     time.sleep(10)
                     continue
                 return False
             except ConnectionError as e:
-                logger.error(f"[UPLOAD] 连接错误 {remote_path}")
-                logger.error(f"[UPLOAD] 尝试: {attempt + 1}/{max_retries}")
-                logger.error(f"[UPLOAD] 连接异常: {type(e).__name__}: {e}")
+                logger.error(f"[UPLOAD] 连接错误: {e}")
                 if attempt < max_retries - 1:
-                    logger.info(f"[UPLOAD] 等待 10 秒后重试...")
                     time.sleep(10)
                     continue
                 return False
             except Exception as e:
-                logger.error(f"[UPLOAD] 未知错误 {remote_path}")
-                logger.error(f"[UPLOAD] 尝试: {attempt + 1}/{max_retries}")
-                logger.error(f"[UPLOAD] 异常类型: {type(e).__name__}")
-                logger.error(f"[UPLOAD] 异常信息: {e}")
-                logger.error(f"[UPLOAD] 异常详情:", exc_info=True)
+                logger.error(f"[UPLOAD] 未知错误: {type(e).__name__}: {e}", exc_info=True)
                 return False
 
         logger.error(f"[UPLOAD] 所有重试都失败了: {remote_path}")
         return False
 
-    def upload_file(self, local_path: str, remote_path: str, file_size: int = 0, max_retries: int = 3) -> bool:
-        """上传文件到NextCloud（自动选择上传方式）"""
-        logger.info(f"[UPLOAD] upload_file 被调用")
-        logger.info(f"[UPLOAD] local_path: {local_path}")
-        logger.info(f"[UPLOAD] remote_path: {remote_path}")
-        logger.info(f"[UPLOAD] file_size: {file_size} 字节 ({file_size / (1024*1024):.2f} MB)")
-
-        try:
-            # 根据文件大小选择上传方式
-            chunk_threshold = 100 * 1024 * 1024  # 100MB
-
-            if file_size >= chunk_threshold:
-                logger.info(f"[UPLOAD] 文件大于 {chunk_threshold / (1024*1024):.0f} MB，使用分块上传")
-                return self.upload_file_chunked(local_path, remote_path, file_size, max_retries)
-            else:
-                logger.info(f"[UPLOAD] 文件小于 {chunk_threshold / (1024*1024):.0f} MB，使用直接上传")
-                return self.upload_file_direct(local_path, remote_path, file_size, max_retries)
-        except Exception as e:
-            logger.error(f"[UPLOAD] 异常: {type(e).__name__}: {e}")
-            logger.error(f"[UPLOAD] 异常详情:", exc_info=True)
-            return False
+    # ===== 文件下载 =====
 
     def download_file(self, remote_path: str, local_path: str) -> bool:
-        """从NextCloud下载文件"""
-        # 确保 remote_path 以 / 开头，避免 URL 拼接错误
+        """从 NextCloud 下载文件"""
         if not remote_path.startswith("/"):
             remote_path = "/" + remote_path
         try:

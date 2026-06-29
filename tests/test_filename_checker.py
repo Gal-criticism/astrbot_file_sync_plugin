@@ -29,7 +29,7 @@ def test_validate_missing_separator(checker_no_categories):
     result = checker_no_categories.validate("素材项目1.pdf")
     assert result.is_valid is False
     assert result.error_type == "format_error"
-    assert "缺少分隔符 '--'" in result.error_reason
+    assert "缺少分隔符" in result.error_reason
 
 def test_validate_category_not_in_whitelist(checker_with_categories):
     result = checker_with_categories.validate("其他--项目1.pdf")
@@ -45,7 +45,8 @@ def test_validate_category_in_whitelist(checker_with_categories):
 def test_extract_category():
     checker = FilenameChecker(template="{category}--{name}", categories={})
     assert checker.extract_category("素材--项目1.pdf") == "素材"
-    assert checker.extract_category("成品--文档.pdf") == "成品"
+    # 注意："成品" 被规范解析为 "成片"（标准分类）
+    assert checker.extract_category("成品--文档.pdf") == "成片"
     assert checker.extract_category("无分隔符.txt") is None
 
 def test_extract_category_multiple_separators():

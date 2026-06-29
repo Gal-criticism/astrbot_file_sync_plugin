@@ -28,7 +28,7 @@ def test_format_message_full(default_template):
     assert "@测试用户" in message
     assert "「test.pdf」" in message
     assert "缺少分隔符 '--'" in message
-    assert "分类--项目名称" in message
+    assert "项目名称" in message  # 新模板使用项目名称-分类
 
 def test_format_message_with_categories():
     template = "@{sender} 可用分类：{categories}"

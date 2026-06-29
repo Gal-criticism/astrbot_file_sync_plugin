@@ -1,5 +1,11 @@
+"""文件名验证结果模型（兼容旧版）
+
+@deprecated 请使用 NamingResult 替代
+"""
+
 from dataclasses import dataclass
 from typing import Optional
+
 
 @dataclass
 class FileValidationResult:

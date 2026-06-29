@@ -2,11 +2,9 @@ import sqlite3
 from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
-from zoneinfo import ZoneInfo
-
-CN_TZ = ZoneInfo("Asia/Shanghai")
 
 from ..models.sync_record import SyncRecord
+from ..utils.constants import CN_TZ
 
 class StateManager:
     """同步状态管理器，使用SQLite存储"""

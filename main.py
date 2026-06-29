@@ -1,65 +1,22 @@
 import asyncio
-import json
-import tempfile
-import time
 from datetime import datetime
-from zoneinfo import ZoneInfo
-from pathlib import Path
 from typing import Optional
-
-import httpx
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 
 from .config import FileSyncConfig, validate_config
-
-CN_TZ = ZoneInfo("Asia/Shanghai")
-
-
-def _ensure_list(value) -> list:
-    """确保值为列表类型，处理 JSON 字符串格式的列表"""
-    # 先处理外层类型
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, list):
-                value = parsed
-        except (json.JSONDecodeError, TypeError):
-            pass
-        if isinstance(value, str) and value.strip():
-            value = [v.strip() for v in value.split(",")]
-
-    if not isinstance(value, list):
-        return []
-
-    # 再处理列表内每个元素（可能嵌套了字符串化的列表）
-    result = []
-    for item in value:
-        if isinstance(item, str):
-            try:
-                parsed = json.loads(item)
-                if isinstance(parsed, list):
-                    result.extend(parsed)
-                    continue
-            except (json.JSONDecodeError, TypeError):
-                pass
-            if item.strip():
-                result.append(item.strip())
-        elif isinstance(item, list):
-            result.extend(_ensure_list(item))
-        else:
-            result.append(item)
-    return result
-
+from .utils.config_helpers import ensure_list
+from .utils.constants import CN_TZ
 
 from .services.cloud_sync import CloudSyncService
 from .services.state_manager import StateManager
+from .services.naming_validator import NamingValidator
 from .models.sync_record import SyncRecord
 
 
-@register("file_sync_plugin3", "Developer", "QQ群文件自动同步NextCloud", "1.0.0")
+@register("file_sync_plugin", "Developer", "QQ群文件自动同步NextCloud", "1.0.0")
 class FileSyncPlugin(Star):
     """QQ群文件自动同步NextCloud插件"""
 
@@ -67,128 +24,139 @@ class FileSyncPlugin(Star):
         super().__init__(context)
         self.context = context
         self.cfg = config
-        self.name = "file_sync_plugin3"
+        self.name = "file_sync_plugin"
         self.config: Optional[FileSyncConfig] = None
         self.state_manager: Optional[StateManager] = None
         self.cloud_sync: Optional[CloudSyncService] = None
         self.filename_checker = None
+        self.naming_validator: Optional[NamingValidator] = None
         self.notify_service = None
         self._sync_task: Optional[asyncio.Task] = None
         self._running = False
 
-        logger.info("================================================================")
-        logger.info("========== FileSyncPlugin __init__ 开始 ==========")
-        logger.info(f"插件名称: {self.name}")
-        logger.info(f"Context 类型: {type(self.context)}")
-        logger.info(f"Config 类型: {type(self.cfg)}")
-        logger.info(f"Config 内容: {self.cfg}")
+        # 命令处理器（延迟初始化）
+        self._sync_cmd_handler = None
+        self._diag_cmd_handler = None
+        self._file_event_handler = None
+
+        logger.info("========== FileSyncPlugin 初始化 ==========")
 
         try:
             if self.cfg is None:
-                logger.error("❌ 插件配置未初始化，self.cfg 为 None")
+                logger.error("插件配置未初始化，self.cfg 为 None")
                 return
 
-            logger.info("✓ 配置对象存在，开始转换...")
-            plugin_config = dict(self.cfg)
-            logger.info(f"转换后的配置字典: {plugin_config}")
-
-            if not plugin_config:
-                logger.error("❌ 插件配置为空，请检查配置")
-                return
-
-            # 处理 AstrBot 可能以 JSON 字符串传入的列表字段
-            plugin_config["enabled_groups"] = _ensure_list(plugin_config.get("enabled_groups", []))
-            plugin_config["file_type_whitelist"] = _ensure_list(plugin_config.get("file_type_whitelist", ["*"]))
-
-            # 处理数值字段：AstrBot 可能传入字符串或 0，需要转换并替换为默认值
-            for key, default, min_val in [
-                ("sync_interval_minutes", 1440, 1),
-                ("retry_max_attempts", 3, 1),
-                ("retry_delay_seconds", 300, 60),
-            ]:
-                val = plugin_config.get(key, default)
-                try:
-                    val = int(val)
-                except (ValueError, TypeError):
-                    val = default
-                if val < min_val:
-                    val = default
-                plugin_config[key] = val
-
-            # 处理必填字符串字段：AstrBot 可能传入空字符串
-            for key in ("nextcloud_url", "nextcloud_username", "nextcloud_password"):
-                val = plugin_config.get(key, "")
-                if not val or not str(val).strip():
-                    logger.warning(f"⚠️ 配置项 {key} 为空，部分功能可能不可用")
-
-            logger.info(f"✓ 字段预处理完成: enabled_groups={plugin_config['enabled_groups']}, sync_interval={plugin_config['sync_interval_minutes']}分钟")
-
-            logger.info("✓ 开始验证配置...")
-            self.config = validate_config(plugin_config)
-            logger.info(f"✓ 配置验证成功")
-            logger.info(f"  - enabled_groups: {self.config.enabled_groups}")
-            logger.info(f"  - sync_interval_minutes: {self.config.sync_interval_minutes}")
-            logger.info(f"  - base_path: {self.config.base_path}")
-            logger.info(f"  - file_type_whitelist: {self.config.file_type_whitelist}")
-
-            if not self.config.enabled_groups:
-                logger.warning("⚠️ 配置中 enabled_groups 为空，请添加需要同步的群号")
-            else:
-                logger.info(f"✓ 已配置 {len(self.config.enabled_groups)} 个群: {self.config.enabled_groups}")
-
-            logger.info("✓ 初始化状态管理器...")
-            self.state_manager = StateManager()
-            logger.info("✓ 状态管理器初始化完成")
-
-            logger.info("✓ 初始化云同步服务...")
-            self.cloud_sync = CloudSyncService(self.config)
-            logger.info("✓ 云同步服务初始化完成")
-
-            # 文件名检查相关
-            self.filename_checker = None
-            self.notify_service = None
-
-            # 初始化文件名检查器（如果启用）
-            if self.config.filename_check_enabled:
-                from .services.filename_checker import FilenameChecker
-                from .services.notify_service import NotifyService
-                self.filename_checker = FilenameChecker(
-                    template=self.config.filename_template,
-                    categories=self.config.get_filename_categories()
-                )
-                self.notify_service = NotifyService(
-                    template=self.config.filename_notify_template
-                )
-                logger.info(f"✓ 文件名检查器已启用，模板: {self.config.filename_template}")
-            else:
-                logger.info("文件名检查未启用")
-
-            self._running = True
-
-            # 根据配置决定是否启动同步功能
-            if self.config.sync_enabled:
-                logger.info("✓ 同步功能已启用，启动定时同步任务...")
-                self._sync_task = asyncio.create_task(self._sync_loop())
-                logger.info(f"✓ 定时同步任务已启动，间隔: {self.config.sync_interval_minutes}分钟")
-            else:
-                logger.info("⚠ 同步功能已禁用（sync_enabled=false），跳过定时同步任务")
-                self._sync_task = None
+            self._init_config()
+            self._init_services()
+            self._start_sync_loop()
 
         except Exception as e:
-            logger.error(f"❌ 初始化插件时发生异常: {e}", exc_info=True)
+            logger.error(f"初始化插件时发生异常: {e}", exc_info=True)
 
-        logger.info("========== FileSyncPlugin __init__ 结束 ==========")
-        logger.info("================================================================")
+        logger.info("========== FileSyncPlugin 初始化完成 ==========")
+
+    # ===== 初始化方法 =====
+
+    def _init_config(self):
+        """初始化配置"""
+        plugin_config = dict(self.cfg)
+
+        if not plugin_config:
+            logger.error("插件配置为空，请检查配置")
+            return
+
+        # 处理列表字段
+        plugin_config["enabled_groups"] = ensure_list(plugin_config.get("enabled_groups", []))
+        plugin_config["file_type_whitelist"] = ensure_list(plugin_config.get("file_type_whitelist", ["*"]))
+
+        # 处理数值字段
+        for key, default, min_val in [
+            ("sync_interval_minutes", 1440, 1),
+            ("retry_max_attempts", 3, 1),
+            ("retry_delay_seconds", 300, 60),
+        ]:
+            val = plugin_config.get(key, default)
+            try:
+                val = int(val)
+            except (ValueError, TypeError):
+                val = default
+            if val < min_val:
+                val = default
+            plugin_config[key] = val
+
+        # 检查必填字符串字段
+        for key in ("nextcloud_url", "nextcloud_username", "nextcloud_password"):
+            val = plugin_config.get(key, "")
+            if not val or not str(val).strip():
+                logger.warning(f"配置项 {key} 为空，部分功能可能不可用")
+
+        self.config = validate_config(plugin_config)
+        logger.info(f"配置验证成功 - 群: {self.config.enabled_groups}")
+
+    def _init_services(self):
+        """初始化服务"""
+        if not self.config:
+            return
+
+        self.state_manager = StateManager()
+        logger.info("状态管理器初始化完成")
+
+        self.cloud_sync = CloudSyncService(self.config)
+        logger.info("云同步服务初始化完成")
+
+        # 初始化文件名检查器（新规范 + 旧兼容）
+        if self.config.filename_check_enabled:
+            from .services.naming_validator import NamingValidator
+            from .services.filename_checker import FilenameChecker
+            from .services.notify_service import NotifyService
+
+            # 新规范验证器
+            extra_cats = self.config.get_naming_extra_categories()
+            self.naming_validator = NamingValidator(extra_categories=extra_cats if extra_cats else None)
+
+            # 旧兼容层
+            old_cats = self.config.get_filename_categories()
+            self.filename_checker = FilenameChecker(
+                template=self.config.filename_template,
+                categories=old_cats if old_cats else {}
+            )
+
+            self.notify_service = NotifyService(
+                template=self.config.filename_notify_template
+            )
+            logger.info(f"文件名检查器已启用（新规范 + 旧兼容）")
+        else:
+            logger.info("文件名检查未启用")
+
+        self._running = True
+
+    def _start_sync_loop(self):
+        """启动定时同步循环"""
+        if not self.config:
+            return
+
+        if self.config.sync_enabled:
+            self._sync_task = asyncio.create_task(self._sync_loop())
+            mode = "时间点" if self.config.has_time_points() else "间隔"
+            logger.info(f"定时同步已启动（{mode}模式）")
+        else:
+            logger.info("同步功能已禁用（sync_enabled=false）")
+            self._sync_task = None
 
     async def initialize(self):
-        """可选的异步初始化方法"""
-        logger.info("========== initialize() 被调用 ==========")
-        logger.info(f"当前配置状态: {self.config is not None}")
-        logger.info(f"状态管理器状态: {self.state_manager is not None}")
-        logger.info(f"云同步服务状态: {self.cloud_sync is not None}")
-        logger.info(f"定时任务状态: {self._sync_task is not None}")
+        """可选的异步初始化方法（AstrBot 生命周期）"""
+        logger.info("========== initialize() ==========")
 
-        # 预热：插件启动时从 NextCloud 远程文件列表填充 SQLite 查重数据
+        # 延迟初始化命令处理器（此时所有 handler 类已可用）
+        from .handlers.sync_commands import SyncCommandHandler
+        from .handlers.diagnostic_commands import DiagnosticCommandHandler
+        from .handlers.file_events import FileEventHandler
+
+        self._sync_cmd_handler = SyncCommandHandler(self)
+        self._diag_cmd_handler = DiagnosticCommandHandler(self)
+        self._file_event_handler = FileEventHandler(self)
+
+        # 预热：从 NextCloud 远程文件列表填充 SQLite 查重数据
         if self.config and self.config.enabled_groups and self.cloud_sync and self.state_manager:
             logger.info("开始预热 SQLite 查重数据...")
             warmed_groups = 0
@@ -200,241 +168,136 @@ class FileSyncPlugin(Star):
                     files_on_cloud = self.cloud_sync.list_remote_files(group_base_path)
                     if files_on_cloud:
                         self.state_manager.populate_from_remote_list(files_on_cloud, group_id)
-                        logger.info(f"群 {group_id} 预热完成，写入 {len(files_on_cloud)} 条文件记录")
+                        logger.info(f"群 {group_id} 预热完成，写入 {len(files_on_cloud)} 条记录")
                         warmed_groups += 1
                     else:
                         logger.info(f"群 {group_id} 远程目录无文件，预热跳过")
                 except Exception as e:
                     logger.warning(f"群 {group_id} 预热失败: {e}")
             logger.info(f"查重数据预热完成，共处理 {warmed_groups} 个群")
-        else:
-            logger.info("跳过预热：配置或服务未就绪")
 
     async def terminate(self):
         """插件卸载时调用"""
-        logger.info("================================================================")
         logger.info("========== 插件开始卸载 ==========")
-        logger.info(f"当前运行状态: {self._running}")
-        logger.info(f"定时任务存在: {self._sync_task is not None}")
-
         self._running = False
+
         if self._sync_task:
-            logger.info("正在取消定时同步任务...")
             self._sync_task.cancel()
             try:
                 await self._sync_task
             except asyncio.CancelledError:
-                logger.info("✓ 定时同步任务已取消")
+                logger.info("定时同步任务已取消")
 
         if self.state_manager:
-            logger.info("正在关闭数据库连接...")
             self.state_manager.close()
-            logger.info("✓ 数据库连接已关闭")
+            logger.info("数据库连接已关闭")
 
         logger.info("========== 插件卸载完成 ==========")
-        logger.info("================================================================")
+
+    # ===== 定时同步循环 =====
 
     async def _sync_loop(self):
         """定时同步循环"""
-        logger.info("========== 定时同步循环启动 ==========")
-        if self.config.has_time_points():
-            logger.info(f"同步模式: 时间点模式，时间点: {self.config.sync_time_points}")
-        else:
-            logger.info(f"同步模式: 间隔模式，间隔: {self.config.sync_interval_minutes} 分钟")
+        logger.info("定时同步循环启动")
         loop_count = 0
 
         while self._running:
             loop_count += 1
-            logger.info(f"--- 定时同步第 {loop_count} 轮开始 ---")
+            logger.info(f"--- 定时同步第 {loop_count} 轮 ---")
 
             try:
                 await self.sync_all_groups()
             except Exception as e:
-                logger.error(f"❌ 定时同步任务执行失败: {e}", exc_info=True)
+                logger.error(f"定时同步执行失败: {e}", exc_info=True)
 
             if self._running:
-                from datetime import datetime
                 now = datetime.now(CN_TZ)
                 wait_seconds = self.config.get_next_delay_seconds(now)
-                wait_minutes = wait_seconds / 60
-                logger.info(f"等待 {wait_minutes:.1f} 分钟后进行下次同步")
+                logger.info(f"等待 {wait_seconds / 60:.1f} 分钟后下次同步")
                 await asyncio.sleep(wait_seconds)
 
-        logger.info("========== 定时同步循环已停止 ==========")
+        logger.info("定时同步循环已停止")
+
+    # ===== 命令处理器 =====
 
     @filter.command("同步文件")
     async def sync_files_command(self, event: AstrMessageEvent):
         """手动触发一次同步"""
-        logger.info("================================================================")
-        logger.info("========== 收到手动同步命令 ==========")
-        logger.info(f"发送者: {event.get_sender_name()}")
-        logger.info(f"当前配置状态: {self.config is not None}")
-        logger.info(f"当前状态管理器: {self.state_manager is not None}")
-        logger.info(f"当前云同步服务: {self.cloud_sync is not None}")
-
-        # 检查同步功能是否启用
-        if self.config and not self.config.sync_enabled:
-            logger.info("同步功能已禁用，手动同步被拒绝")
-            yield event.plain_result("同步功能已禁用，请在配置中启用 sync_enabled")
-            return
-
-        yield event.plain_result("开始同步...")
-        synced_count = await self.sync_all_groups()
-
-        if synced_count == 0:
-            logger.info("手动同步完成，未处理任何群")
-            yield event.plain_result("同步完成，但未处理任何群（请检查 enabled_groups 配置）")
-        else:
-            logger.info(f"手动同步完成，共处理 {synced_count} 个群")
-            yield event.plain_result(f"同步完成，共处理 {synced_count} 个群")
-
-        logger.info("========== 手动同步命令处理完毕 ==========")
-        logger.info("================================================================")
+        if not self._sync_cmd_handler:
+            self._ensure_handlers()
+        async for result in self._sync_cmd_handler.handle_sync_files(event):
+            yield result
 
     @filter.command("同步状态")
     async def sync_status_command(self, event: AstrMessageEvent):
         """查看同步状态"""
-        logger.info("收到查看同步状态命令")
-        if not self.state_manager:
-            yield event.plain_result("状态管理器未初始化")
-            return
-        stats = self.state_manager.get_sync_stats()
-        logger.info(f"同步状态: 已同步 {stats['total_synced']} 个文件，待重试 {stats['pending_retries']} 个")
-        yield event.plain_result(
-            f"已同步文件: {stats['total_synced']}\n"
-            f"待重试: {stats['pending_retries']}"
-        )
+        if not self._sync_cmd_handler:
+            self._ensure_handlers()
+        async for result in self._sync_cmd_handler.handle_sync_status(event):
+            yield result
 
     @filter.command("同步统计")
     async def sync_stats_command(self, event: AstrMessageEvent):
         """查看同步统计"""
-        logger.info("收到查看同步统计命令")
-        if not self.state_manager:
-            yield event.plain_result("状态管理器未初始化")
-            return
-
-        # 获取命令参数（群号）
-        args = event.message_str.strip().split()
-        group_id = args[1] if len(args) > 1 else None
-
-        if group_id:
-            # 查看指定群的详细统计
-            stats = self.state_manager.get_group_stats(group_id)
-            msg = f"=== 群 {group_id} 同步统计 ===\n"
-            msg += f"已同步文件: {stats['synced']}\n"
-            msg += f"待重试: {stats['pending']}\n"
-            msg += f"最后同步: {stats['last_sync_time'] or '从未同步'}\n"
-
-            if stats['recent_files']:
-                msg += "\n最近同步文件:\n"
-                for f in stats['recent_files']:
-                    msg += f"- {f['name']} ({f['size']} 字节)\n"
-        else:
-            # 显示总览 + 分群统计
-            total_stats = self.state_manager.get_sync_stats()
-            group_stats = self.state_manager.get_sync_stats_by_group()
-
-            msg = "=== 同步统计总览 ===\n"
-            msg += f"总同步文件: {total_stats['total_synced']}\n"
-            msg += f"总待重试: {total_stats['pending_retries']}\n"
-            msg += f"启用群数: {len(self.config.enabled_groups)}\n"
-
-            if group_stats:
-                msg += "\n=== 分群统计 ===\n"
-                for gid, stats in group_stats.items():
-                    msg += f"\n群 {gid}:\n"
-                    msg += f"  已同步: {stats['synced']}\n"
-                    msg += f"  待重试: {stats['pending']}\n"
-                    msg += f"  最后同步: {stats['last_sync_time'] or '从未同步'}\n"
-
-        yield event.plain_result(msg)
+        if not self._sync_cmd_handler:
+            self._ensure_handlers()
+        async for result in self._sync_cmd_handler.handle_sync_stats(event):
+            yield result
 
     @filter.command("同步调试")
     async def sync_debug_command(self, event: AstrMessageEvent):
-        """调试命令：检查后端支持的 API"""
-        logger.info("收到调试命令")
-        platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
-        if not platform:
-            yield event.plain_result("无法获取QQ平台")
-            return
-
-        client = platform.get_client()
-        msg = "=== 后端 API 调试信息 ===\n"
-
-        # 1. 检查支持的 API 列表
-        try:
-            result = await client.api.call_action("get_supported_actions")
-            actions = result if isinstance(result, list) else []
-            file_apis = [a for a in actions if "file" in a.lower()]
-            msg += f"支持的文件相关 API: {file_apis if file_apis else '无'}\n"
-            msg += f"总支持 API 数量: {len(actions)}\n"
-        except Exception as e:
-            msg += f"获取支持的 API 失败: {e}\n"
-
-        # 2. 测试各个文件 API
-        test_apis = [
-            "get_group_root_files",
-            "get_group_file_list",
-            "get_group_files",
-        ]
-        for api_name in test_apis:
-            try:
-                result = await client.api.call_action(
-                    api_name,
-                    group_id=int(self.config.enabled_groups[0]) if self.config.enabled_groups else 0
-                )
-                msg += f"{api_name}: 可用 (返回类型: {type(result).__name__})\n"
-            except Exception as e:
-                error_msg = str(e)[:80]
-                msg += f"{api_name}: 不可用 ({error_msg})\n"
-
-        logger.info(f"调试信息: {msg}")
-        yield event.plain_result(msg)
+        """调试命令"""
+        if not self._sync_cmd_handler:
+            self._ensure_handlers()
+        async for result in self._sync_cmd_handler.handle_sync_debug(event):
+            yield result
 
     @filter.command("诊断日志")
     async def diagnostic_logs_command(self, event: AstrMessageEvent):
         """查看诊断日志"""
-        logger.info("收到查看诊断日志命令")
-        if not self.state_manager:
-            yield event.plain_result("状态管理器未初始化")
-            return
-
-        logs = self.state_manager.get_diagnostic_logs(limit=20)
-        if not logs:
-            yield event.plain_result("暂无诊断日志，请先执行一次同步")
-            return
-
-        msg = "=== 最近诊断日志 ===\n"
-        for log in logs:
-            msg += f"[{log['timestamp']}] {log['type']}: {log['message']}\n"
-            if log['data']:
-                for key, value in log['data'].items():
-                    msg += f"  - {key}: {value}\n"
-            msg += "\n"
-
-        yield event.plain_result(msg)
+        if not self._diag_cmd_handler:
+            self._ensure_handlers()
+        async for result in self._diag_cmd_handler.handle_diagnostic_logs(event):
+            yield result
 
     @filter.command("清空诊断日志")
     async def clear_diagnostic_logs_command(self, event: AstrMessageEvent):
         """清空诊断日志"""
-        logger.info("收到清空诊断日志命令")
-        if not self.state_manager:
-            yield event.plain_result("状态管理器未初始化")
-            return
+        if not self._diag_cmd_handler:
+            self._ensure_handlers()
+        async for result in self._diag_cmd_handler.handle_clear_diagnostic_logs(event):
+            yield result
 
-        self.state_manager.clear_diagnostic_logs()
-        yield event.plain_result("诊断日志已清空")
+    def _ensure_handlers(self):
+        """确保 handler 已初始化（从 __init__ 直接构建场景）"""
+        from .handlers.sync_commands import SyncCommandHandler
+        from .handlers.diagnostic_commands import DiagnosticCommandHandler
+        from .handlers.file_events import FileEventHandler
+        if not self._sync_cmd_handler:
+            self._sync_cmd_handler = SyncCommandHandler(self)
+        if not self._diag_cmd_handler:
+            self._diag_cmd_handler = DiagnosticCommandHandler(self)
+        if not self._file_event_handler:
+            self._file_event_handler = FileEventHandler(self)
+
+    # ===== 文件上传事件 =====
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def on_group_file_upload(self, event: AstrMessageEvent):
+        """监听群文件上传消息，检测文件名是否合规"""
+        if not self._file_event_handler:
+            self._ensure_handlers()
+        async for result in self._file_event_handler.handle_file_upload(event):
+            yield result
+
+    # ===== 同步核心逻辑 =====
 
     async def sync_all_groups(self) -> int:
         """同步所有配置的群，返回同步的群数量"""
         logger.info("开始同步所有群...")
 
-        if not self.config:
-            logger.error("配置未初始化，跳过同步")
-            return 0
-
-        if not self.config.sync_enabled:
-            logger.info("同步功能已禁用（sync_enabled=false），跳过同步")
+        if not self.config or not self.config.sync_enabled:
+            logger.info("同步功能未启用或未配置")
             return 0
 
         if not self.config.enabled_groups:
@@ -455,186 +318,108 @@ class FileSyncPlugin(Star):
 
     async def get_group_info(self, group_id: str) -> tuple:
         """获取群信息，返回 (群名称, 群号)"""
-        logger.debug(f"正在获取群 {group_id} 的信息")
         platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
         if not platform:
-            logger.warning(f"无法获取QQ平台，使用默认群名 Group_{group_id}")
             return (f"Group_{group_id}", group_id)
 
         client = platform.get_client()
         try:
-            result = await client.api.call_action(
-                "get_group_info",
-                group_id=int(group_id)
-            )
+            result = await client.api.call_action("get_group_info", group_id=int(group_id))
             group_name = result.get("group_name", f"Group_{group_id}")
-            logger.debug(f"获取到群信息: {group_name} ({group_id})")
             return (group_name, group_id)
         except Exception as e:
-            logger.warning(f"获取群 {group_id} 信息失败: {e}，使用默认群名")
+            logger.warning(f"获取群 {group_id} 信息失败: {e}")
             return (f"Group_{group_id}", group_id)
 
     async def _get_group_files(self, client, group_id: str) -> list:
         """获取群文件列表，尝试多种 API 端点以兼容不同后端"""
-        # 尝试的 API 端点列表（按优先级排序）
-        api_endpoints = [
-            "get_group_root_files",      # 标准 OneBot 11 端点
-            "get_group_file_list",        # go-cqhttp 扩展端点
-            "get_group_files",            # 部分后端使用
-        ]
+        api_endpoints = ["get_group_root_files", "get_group_file_list", "get_group_files"]
 
         for api_name in api_endpoints:
             try:
-                logger.debug(f"尝试 API: {api_name}, group_id={group_id}")
-                result = await client.api.call_action(
-                    api_name,
-                    group_id=int(group_id)
-                )
-                logger.info(f"API {api_name} 调用成功")
+                result = await client.api.call_action(api_name, group_id=int(group_id))
+                logger.debug(f"API {api_name} 成功")
 
-                # 标准响应格式: {"files": [...], "folders": [...]}
                 if isinstance(result, dict):
                     files = result.get("files", [])
-                    folders = result.get("folders", [])
-                    if files or folders:
-                        logger.info(f"获取到 {len(files)} 个文件, {len(folders)} 个文件夹")
+                    if files or result.get("folders"):
                         return files
-
-                # 某些后端直接返回列表
                 if isinstance(result, list):
-                    logger.info(f"获取到 {len(result)} 个项目")
                     return result
 
-                logger.warning(f"API {api_name} 返回格式异常: {type(result)}")
             except Exception as e:
                 error_msg = str(e)
                 if "1404" in error_msg or "不支持" in error_msg:
                     logger.warning(f"API {api_name} 不被支持，尝试下一个")
                     continue
                 else:
-                    logger.error(f"API {api_name} 调用失败: {e}")
+                    logger.error(f"API {api_name} 失败: {e}")
                     continue
 
-        logger.error(f"所有文件列表 API 均失败，当前后端可能不支持群文件操作")
+        logger.error("所有文件列表 API 均失败")
         return []
 
     async def sync_group(self, group_id: str):
         """同步单个群的文件"""
         logger.info(f"开始同步群 {group_id}")
+
         platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
         if not platform:
             logger.error("无法获取QQ平台，跳过同步")
             return
 
         client = platform.get_client()
-
         group_name, group_id = await self.get_group_info(group_id)
-        logger.info(f"正在同步群: {group_name} ({group_id})")
-
         last_sync_time = self.state_manager.get_last_sync_time(group_id)
+
         self.state_manager.add_diagnostic_log("sync_state", f"群 {group_id} 同步状态", {
             "group_id": group_id,
             "last_sync_time": str(last_sync_time),
-            "is_first_sync": last_sync_time is None
+            "is_first_sync": last_sync_time is None,
         })
-        if last_sync_time:
-            logger.info(f"群 {group_id} 上次同步时间: {last_sync_time}")
-        else:
-            logger.info(f"群 {group_id} 首次同步，将同步所有文件")
 
         files = await self._get_group_files(client, group_id)
         if not files:
-            logger.warning(f"群 {group_id} 没有获取到文件或文件列表 API 不可用")
+            logger.warning(f"群 {group_id} 没有获取到文件")
             return
 
         logger.info(f"群 {group_id} 共有 {len(files)} 个文件")
-
         sync_time = datetime.now(CN_TZ)
         new_files_count = 0
 
         for file_info in files:
-            # 兼容不同后端的字段命名格式
             file_id = file_info.get("file_id") or file_info.get("fileid") or file_info.get("id", "")
             file_name = file_info.get("file_name") or file_info.get("filename") or file_info.get("name", "")
             file_size = file_info.get("file_size") or file_info.get("size", 0)
             upload_time_ts = file_info.get("add_time") or file_info.get("upload_time") or file_info.get("create_time", 0)
-
             upload_time = datetime.fromtimestamp(upload_time_ts, tz=CN_TZ) if upload_time_ts else None
 
-            # 收集诊断日志
-            self.state_manager.add_diagnostic_log("file_info", f"文件: {file_name}", {
-                "file_id": file_id,
-                "file_size": file_size,
-                "upload_time_ts": upload_time_ts,
-                "upload_time": str(upload_time),
-                "last_sync_time": str(last_sync_time),
-                "raw_fields": list(file_info.keys())
-            })
-
+            # 类型过滤
             if not self.config.is_file_type_allowed(file_name):
-                self.state_manager.add_diagnostic_log("skip", f"跳过不允许的文件类型: {file_name}", {"reason": "file_type_not_allowed"})
                 continue
 
             # 时间戳检查
-            if last_sync_time and upload_time:
-                if upload_time <= last_sync_time:
-                    self.state_manager.add_diagnostic_log("skip", f"跳过旧文件: {file_name}", {
-                        "reason": "old_file",
-                        "upload_time": str(upload_time),
-                        "last_sync_time": str(last_sync_time)
-                    })
-                    continue
-                else:
-                    self.state_manager.add_diagnostic_log("check", f"文件较新: {file_name}", {
-                        "reason": "new_file",
-                        "upload_time": str(upload_time),
-                        "last_sync_time": str(last_sync_time)
-                    })
-            else:
-                self.state_manager.add_diagnostic_log("check", f"跳过时间戳检查: {file_name}", {
-                    "reason": "missing_time",
-                    "has_last_sync_time": last_sync_time is not None,
-                    "has_upload_time": upload_time is not None
-                })
-
-            # 第一层去重：基于 file_id
-            if self.state_manager.is_synced(file_id):
-                self.state_manager.add_diagnostic_log("skip", f"跳过已同步文件(file_id): {file_name}", {
-                    "reason": "file_id_synced",
-                    "file_id": file_id
-                })
+            if last_sync_time and upload_time and upload_time <= last_sync_time:
                 continue
 
-            # 第二层去重：基于文件名+大小+群号
+            # 两层去重
+            if self.state_manager.is_synced(file_id):
+                continue
             if self.state_manager.is_synced_by_name_size(file_name, file_size, group_id):
-                self.state_manager.add_diagnostic_log("skip", f"跳过已同步文件(name+size): {file_name}", {
-                    "reason": "name_size_synced",
-                    "file_size": file_size
-                })
                 continue
 
             target_path = self.config.generate_target_path(group_name, group_id, file_name)
-
-            success = await self.sync_single_file(
+            success = await self._sync_single_file(
                 group_id, target_path, file_id, file_name, file_size
             )
 
             if success:
                 new_files_count += 1
                 record = SyncRecord(
-                    file_id=file_id,
-                    file_name=file_name,
-                    file_size=file_size,
-                    group_id=group_id,
-                    target_path=target_path,
+                    file_id=file_id, file_name=file_name, file_size=file_size,
+                    group_id=group_id, target_path=target_path,
                     sync_time=datetime.now(CN_TZ)
                 )
-                self.state_manager.add_diagnostic_log("sync_success", f"文件同步成功: {file_name}", {
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "file_size": file_size,
-                    "target_path": target_path
-                })
                 self.state_manager.add_sync_record(record)
             else:
                 if self.config.retry_queue_enabled:
@@ -643,202 +428,23 @@ class FileSyncPlugin(Star):
                         self.config.retry_delay_seconds
                     )
 
-        self.state_manager.add_diagnostic_log("sync_state", f"群 {group_id} 同步完成", {
-            "group_id": group_id,
-            "new_files_count": new_files_count,
-            "sync_time": str(sync_time)
-        })
         self.state_manager.update_last_sync_time(group_id, sync_time)
         logger.info(f"群 {group_id} 同步完成，新增 {new_files_count} 个文件")
 
-    async def sync_single_file(self, group_id: str, target_path: str,
-                               file_id: str, file_name: str, file_size: int) -> bool:
-        """同步单个文件"""
-        logger.info(f"开始同步文件: {file_name} (ID: {file_id}, 大小: {file_size / (1024*1024):.1f} MB)")
-        local_path = None
-        remote_path = f"{target_path}/{file_name}"
-        try:
-            platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
-            if not platform:
-                logger.error(f"无法获取QQ平台，跳过文件 {file_name}")
-                return False
+    async def _sync_single_file(self, group_id: str, target_path: str,
+                                 file_id: str, file_name: str, file_size: int) -> bool:
+        """同步单个文件（委托给 SyncExecutor）"""
+        from .services.sync_executor import SyncExecutor
+        executor = SyncExecutor(self)
+        return await executor.sync_single_file(
+            group_id=group_id,
+            target_path=target_path,
+            file_id=file_id,
+            file_name=file_name,
+            file_size=file_size,
+        )
 
-            client = platform.get_client()
-            logger.debug(f"正在获取文件 {file_name} 的下载链接")
-
-            # 尝试多种 API 获取下载链接
-            file_url = None
-            url_apis = ["get_group_file_url", "get_file_url"]
-            for api_name in url_apis:
-                try:
-                    url_result = await client.api.call_action(
-                        api_name,
-                        group_id=int(group_id),
-                        file_id=file_id
-                    )
-                    file_url = url_result.get("url")
-                    if file_url:
-                        break
-                except Exception as e:
-                    logger.warning(f"API {api_name} 失败: {e}")
-                    continue
-            if not file_url:
-                logger.error(f"[DOWNLOAD] 无法获取文件下载链接: {file_name}")
-                return False
-
-            logger.info(f"[DOWNLOAD] 文件下载链接: {file_url[:100]}...")
-
-            temp_dir = Path(tempfile.gettempdir()) / "file_sync"
-            temp_dir.mkdir(exist_ok=True)
-            local_path = temp_dir / file_name
-
-            # 流式下载文件（支持大文件）
-            logger.info(f"[DOWNLOAD] 开始下载文件到本地: {local_path}")
-            logger.info(f"[DOWNLOAD] 预期文件大小: {file_size} 字节 ({file_size / (1024*1024):.2f} MB)")
-            downloaded_size = 0
-            start_time = time.time()
-
-            # 根据文件大小动态调整下载超时
-            download_timeout = max(600, file_size // (1024 * 1024) * 15)  # 至少 10 分钟，每 MB 增加 15 秒
-            logger.info(f"[DOWNLOAD] 下载超时设置: {download_timeout} 秒")
-
-            try:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(timeout=download_timeout)) as http_client:
-                    async with http_client.stream("GET", file_url) as response:
-                        logger.info(f"[DOWNLOAD] 响应状态码: {response.status_code}")
-                        logger.debug(f"[DOWNLOAD] 响应头: {dict(response.headers)}")
-                        response.raise_for_status()
-                        with open(local_path, "wb") as f:
-                            async for chunk in response.aiter_bytes(chunk_size=65536):  # 64KB 块大小
-                                f.write(chunk)
-                                downloaded_size += len(chunk)
-                                # 每 10MB 输出一次进度
-                                if downloaded_size % (10 * 1024 * 1024) == 0:
-                                    elapsed = time.time() - start_time
-                                    speed = downloaded_size / elapsed / 1024 / 1024 if elapsed > 0 else 0
-                                    progress = (downloaded_size / file_size) * 100 if file_size > 0 else 0
-                                    logger.info(f"[DOWNLOAD] 下载进度: {progress:.1f}%, 已下载: {downloaded_size / (1024*1024):.1f} MB, 速度: {speed:.2f} MB/s")
-            except httpx.HTTPStatusError as e:
-                logger.error(f"[DOWNLOAD] HTTP 状态错误: {e.response.status_code} {e.response.reason_phrase}")
-                logger.error(f"[DOWNLOAD] 响应内容: {e.response.text[:500]}")
-                return False
-            except httpx.HTTPError as e:
-                logger.error(f"[DOWNLOAD] HTTP 错误: {type(e).__name__}: {e}")
-                return False
-
-            elapsed = time.time() - start_time
-            speed = downloaded_size / elapsed / 1024 / 1024 if elapsed > 0 else 0
-            logger.info(f"[DOWNLOAD] 文件下载完成")
-            logger.info(f"[DOWNLOAD] 下载大小: {downloaded_size} 字节 ({downloaded_size / (1024*1024):.2f} MB)")
-            logger.info(f"[DOWNLOAD] 耗时: {elapsed:.1f}秒, 速度: {speed:.2f} MB/s")
-
-            # 检查下载的文件是否完整
-            if local_path.exists():
-                actual_size = local_path.stat().st_size
-                logger.info(f"[DOWNLOAD] 本地文件实际大小: {actual_size} 字节 ({actual_size / (1024*1024):.2f} MB)")
-                if actual_size != file_size:
-                    logger.warning(f"[DOWNLOAD] 文件大小不匹配! 预期: {file_size}, 实际: {actual_size}")
-            else:
-                logger.error(f"[DOWNLOAD] 下载的文件不存在: {local_path}")
-                return False
-
-            remote_path = f"{target_path}/{file_name}"
-            logger.info(f"[SYNC] 准备上传文件到NextCloud: {remote_path}")
-            logger.info(f"[SYNC] 本地文件: {local_path}")
-            logger.info(f"[SYNC] 文件大小: {file_size} 字节 ({file_size / (1024*1024):.2f} MB)")
-
-            # 检查本地文件是否存在
-            if not local_path.exists():
-                logger.error(f"[SYNC] 本地文件不存在: {local_path}")
-                return False
-
-            # 获取本地文件实际大小
-            actual_size = local_path.stat().st_size
-            logger.info(f"[SYNC] 本地文件实际大小: {actual_size} 字节 ({actual_size / (1024*1024):.2f} MB)")
-
-            # 检查 cloud_sync 是否初始化
-            if not self.cloud_sync:
-                logger.error(f"[SYNC] cloud_sync 未初始化!")
-                return False
-
-            logger.info(f"[SYNC] 开始调用 cloud_sync.upload_file...")
-            logger.info(f"[SYNC] cloud_sync 类型: {type(self.cloud_sync)}")
-            logger.info(f"[SYNC] cloud_sync.upload_file 类型: {type(self.cloud_sync.upload_file)}")
-            logger.info(f"[SYNC] 上传前检查 - 文件存在: {local_path.exists()}, 大小: {local_path.stat().st_size if local_path.exists() else 'N/A'}")
-
-            # 直接在线程中调用，添加更多日志
-            def _upload_with_logs():
-                logger.debug(f"[SYNC-THREAD] ===== 开始在线程中执行上传 =====")
-                logger.debug(f"[SYNC-THREAD] local_path: {local_path}")
-                logger.debug(f"[SYNC-THREAD] remote_path: {remote_path}")
-                logger.debug(f"[SYNC-THREAD] file_size: {file_size}")
-                logger.debug(f"[SYNC-THREAD] self.cloud_sync: {self.cloud_sync}")
-                logger.debug(f"[SYNC-THREAD] self.cloud_sync.upload_file: {self.cloud_sync.upload_file}")
-
-                try:
-                    logger.info(f"[SYNC-THREAD] 调用 self.cloud_sync.upload_file...")
-
-                    # 检查文件是否存在
-                    import os
-                    if os.path.exists(local_path):
-                        logger.debug(f"[SYNC-THREAD] 文件存在: {local_path}")
-                    else:
-                        logger.error(f"[SYNC-THREAD] 文件不存在: {local_path}")
-                        return False
-
-                    # 调用 upload_file_direct 方法
-                    logger.info(f"[SYNC-THREAD] 调用 self.cloud_sync.upload_file_direct...")
-                    result = self.cloud_sync.upload_file_direct(str(local_path), remote_path, file_size)
-                    logger.info(f"[SYNC-THREAD] upload_file_direct 返回: {result}")
-                    return result
-                except Exception as e:
-                    logger.error(f"[SYNC-THREAD] upload_file 异常: {type(e).__name__}: {e}")
-                    logger.error(f"[SYNC-THREAD] 异常详情:", exc_info=True)
-                    raise
-
-            try:
-                logger.info(f"[SYNC] 调用 asyncio.to_thread...")
-                upload_success = await asyncio.to_thread(_upload_with_logs)
-                logger.info(f"[SYNC] asyncio.to_thread 返回: {upload_success}")
-                logger.info(f"[SYNC] cloud_sync.upload_file 返回: {upload_success}")
-                logger.info(f"[SYNC] 上传后检查 - 文件存在: {local_path.exists()}, 大小: {local_path.stat().st_size if local_path.exists() else 'N/A'}")
-            except Exception as e:
-                logger.error(f"[SYNC] cloud_sync.upload_file 抛出异常: {type(e).__name__}: {e}")
-                logger.error(f"[SYNC] 异常详情:", exc_info=True)
-                logger.error(f"[SYNC] 异常时检查 - 文件存在: {local_path.exists()}")
-                return False
-
-            if upload_success:
-                logger.info(f"[SYNC] 文件同步成功: {file_name}")
-            else:
-                logger.error(f"[SYNC] 文件上传失败: {file_name}")
-                logger.error(f"[SYNC] 本地文件: {local_path}")
-                logger.error(f"[SYNC] 远程路径: {remote_path}")
-                logger.error(f"[SYNC] 文件大小: {file_size} 字节")
-
-            return upload_success
-
-        except httpx.HTTPError as e:
-            logger.error(f"下载文件失败 {file_name}: {e}")
-            return False
-        except IOError as e:
-            logger.error(f"文件IO操作失败 {file_name}: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"同步文件失败 {file_name}: {e}", exc_info=True)
-            return False
-        finally:
-            # 确保删除本地临时文件
-            if local_path and local_path.exists():
-                try:
-                    file_size_before = local_path.stat().st_size
-                    local_path.unlink()
-                    logger.info(f"[CLEANUP] 已删除临时文件: {local_path} (大小: {file_size_before} 字节)")
-                except Exception as e:
-                    logger.warning(f"[CLEANUP] 删除临时文件失败 {local_path}: {e}")
-            else:
-                if local_path:
-                    logger.debug(f"[CLEANUP] 临时文件不存在，无需删除: {local_path}")
+    # ===== 重试队列 =====
 
     async def _notify_retry_failed(self, item: dict):
         """通知用户文件重试同步失败"""
@@ -851,39 +457,36 @@ class FileSyncPlugin(Star):
         logger.warning(msg)
         try:
             platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
-            if platform:
+            if platform and self.config and self.config.enabled_groups:
                 client = platform.get_client()
-                # 尝试发送到配置的第一个群
-                if self.config.enabled_groups:
-                    await client.api.call_action(
-                        "send_group_msg",
-                        group_id=int(self.config.enabled_groups[0]),
-                        message=msg
-                    )
+                await client.api.call_action(
+                    "send_group_msg",
+                    group_id=int(self.config.enabled_groups[0]),
+                    message=msg
+                )
         except Exception as e:
             logger.error(f"发送重试失败通知失败: {e}")
 
     async def process_retry_queue(self):
         """处理重试队列"""
         if not self.state_manager:
-            logger.warning("状态管理器未初始化，跳过重试队列处理")
             return
 
         pending = self.state_manager.get_pending_retries()
         if not pending:
-            logger.debug("重试队列为空")
             return
 
         logger.info(f"处理重试队列，共 {len(pending)} 个任务")
         for item in pending:
-            logger.info(f"重试文件: {item['file_name']} (尝试次数: {item['attempts']})")
+            logger.info(f"重试文件: {item['file_name']} ({item['attempts']}次尝试)")
+
             if item["attempts"] >= self.config.retry_max_attempts:
-                logger.warning(f"文件 {item['file_name']} 重试次数超限 ({item['attempts']}/{self.config.retry_max_attempts})，移出队列")
+                logger.warning(f"文件 {item['file_name']} 重试次数超限，移出队列")
                 self.state_manager.remove_from_retry_queue(item["file_id"])
                 await self._notify_retry_failed(item)
                 continue
 
-            success = await self.sync_single_file(
+            success = await self._sync_single_file(
                 item["group_id"], item["target_path"],
                 item["file_id"], item["file_name"], item["file_size"]
             )
@@ -892,126 +495,10 @@ class FileSyncPlugin(Star):
                 logger.info(f"重试成功: {item['file_name']}")
                 self.state_manager.remove_from_retry_queue(item["file_id"])
                 record = SyncRecord(
-                    file_id=item["file_id"],
-                    file_name=item["file_name"],
-                    file_size=item["file_size"],
-                    group_id=item["group_id"],
-                    target_path=item["target_path"],
-                    sync_time=datetime.now(CN_TZ)
+                    file_id=item["file_id"], file_name=item["file_name"],
+                    file_size=item["file_size"], group_id=item["group_id"],
+                    target_path=item["target_path"], sync_time=datetime.now(CN_TZ)
                 )
                 self.state_manager.add_sync_record(record)
             else:
                 logger.warning(f"重试失败: {item['file_name']}")
-
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
-    async def on_group_file_upload(self, event: AstrMessageEvent):
-        """
-        监听群文件上传消息，检测文件名是否合规
-        """
-        logger.info("========== 收到群消息，检测文件上传 ==========")
-        logger.info(f"消息来源: 群 {event.get_group_id()}, 发送者: {event.get_sender_name()}({event.get_sender_id()})")
-
-        # 检查配置状态
-        logger.info(f"self.config = {self.config is not None}")
-        if self.config:
-            logger.info(f"filename_check_enabled = {self.config.filename_check_enabled}")
-            logger.info(f"filename_checker = {self.filename_checker is not None}")
-            logger.info(f"notify_service = {self.notify_service is not None}")
-
-        # 检查是否启用文件名检查
-        if not self.config:
-            logger.warning("配置为空，跳过文件名检查")
-            return
-
-        if not self.config.filename_check_enabled:
-            logger.info("文件名检查未启用，跳过")
-            return
-
-        if not self.filename_checker or not self.notify_service:
-            logger.warning("文件名检查器或通知服务未初始化，跳过")
-            return
-
-        logger.info(f"文件名检查已启用，模板: {self.config.filename_template}")
-
-        # 检查群号是否在启用列表中
-        group_id = event.get_group_id()
-        if group_id:
-            enabled = self.config.enabled_groups
-            logger.info(f"检查群号 {group_id} 是否在启用列表: {enabled}")
-            if enabled and group_id not in enabled:
-                logger.info(f"群 {group_id} 不在启用列表中，跳过文件名检查")
-                return
-
-        # 检查消息中是否包含 File 组件
-        import astrbot.api.message_components as Comp
-        file_component = None
-        message_chain = event.message_obj.message
-        logger.info(f"消息链长度: {len(message_chain)}")
-
-        for i, seg in enumerate(message_chain):
-            seg_type = type(seg).__name__
-            logger.debug(f"  消息段[{i}]: {seg_type}")
-            if isinstance(seg, Comp.File):
-                file_component = seg
-                logger.info(f"  找到 File 组件: {seg_type}")
-                # 打印 File 组件的属性
-                for attr in ['name', 'file', 'file_id', 'size']:
-                    val = getattr(seg, attr, None)
-                    if val:
-                        logger.debug(f"    File.{attr} = {val}")
-                break
-
-        if not file_component:
-            logger.info("消息中不包含 File 组件，跳过文件检查")
-            return
-
-        # 获取文件名（从 File 组件或 raw_message）
-        filename = getattr(file_component, 'name', None) or getattr(file_component, 'file', None)
-        logger.info(f"从 File 组件提取文件名: {filename}")
-
-        if not filename:
-            # 尝试从 raw_message 获取
-            raw = event.message_obj.raw_message
-            logger.debug(f"尝试从 raw_message 获取文件名，raw_message 类型: {type(raw)}")
-            if raw and isinstance(raw, dict):
-                file_data = raw.get('file', {})
-                if isinstance(file_data, dict):
-                    filename = file_data.get('name')
-                    logger.debug(f"从 raw_message.file 获取: {filename}")
-                if not filename:
-                    filename = raw.get('filename')
-                    logger.debug(f"从 raw_message 获取: {filename}")
-
-        if not filename:
-            logger.warning("无法获取文件名，跳过检查")
-            return
-
-        logger.info(f"开始检查文件名: {filename}")
-
-        # 执行文件名检查
-        result = self.filename_checker.validate(
-            filename=filename,
-            sender_id=event.get_sender_id(),
-            sender_name=event.get_sender_name(),
-            group_id=event.get_group_id() or ""
-        )
-
-        logger.info(f"文件名检查完成: {filename}")
-        logger.info(f"  - 是否合规: {result.is_valid}")
-        logger.info(f"  - 提取的分类: {result.category}")
-        if not result.is_valid:
-            logger.info(f"  - 错误类型: {result.error_type}")
-            logger.info(f"  - 错误原因: {result.error_reason}")
-
-        # 如果不合规，发送 @提醒
-        if not result.is_valid:
-            categories_str = self.filename_checker.format_categories()
-            logger.info(f"准备发送 @提醒，可用分类: {categories_str or '无限制'}")
-
-            chain = self.notify_service.build_message_chain(result, categories_str)
-            logger.info(f"消息链构建完成: {chain}")
-
-            yield event.chain_result(chain)
-            logger.info("@提醒消息已发送")
-        else:
-            logger.info("文件名合规，无需提醒")
