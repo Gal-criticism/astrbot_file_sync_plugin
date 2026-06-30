@@ -39,7 +39,7 @@ QQ群文件自动同步到NextCloud私有云盘的AstrBot插件。
 
 | 配置项 | 说明 | 默认值 |
 |-------|------|--------|
-| `sync_enabled` | 同步功能总开关（false则定时循环不启动） | `true` |
+| `sync_enabled` | 同步功能总开关（false则定时循环不启动） | `false` |
 | `nextcloud_url` | NextCloud WebDAV地址 | — |
 | `nextcloud_username` | NextCloud用户名 | — |
 | `nextcloud_password` | NextCloud应用密码 | — |
