@@ -22,18 +22,18 @@ pytest tests/test_config.py -v
 ## 架构设计
 
 ```
-main.py (FileSyncPlugin ~530行)                     ← 插件生命周期 + 命令注册
+main.py (FileSyncPlugin ~750行)                     ← 插件生命周期 + 命令注册
   └── handlers/                                       ← 命令与事件处理器
       ├── sync_commands.py      ← 同步命令 + 预设路径/群绑定管理
       ├── diagnostic_commands.py
-      └── file_events.py        ← 文件上传事件(命名规范检查)
+      └── file_events.py        ← 文件上传事件: 命名检查 → 合规即时同步
   └── services/
       ├── naming_validator.py   ← 新命名规范验证器(六大分类 + 版本号 + 扩展名校验)
       ├── filename_checker.py   ← [deprecated] 旧 FilenameChecker(重定向到 NamingValidator)
       ├── cloud_sync.py         ← NextCloud WebDAV(PROPFIND/MKCOL/PUT)
       ├── state_manager.py      ← SQLite(sync_records/retry_queue/preset_paths/group_bindings)
       ├── file_scanner.py       ← QQ 群文件 API 封装
-      ├── file_downloader.py    ← QQ 群文件流式下载(httpx AsyncClient)
+      ├── file_downloader.py    ← QQ 群文件流式下载(httpx AsyncClient; file_size=0 跳过大小校验)
       ├── sync_executor.py      ← 单文件同步协调器(下载→上传,返回 SyncResult)
       └── notify_service.py     ← @提醒消息链构建
   └── models/
@@ -46,7 +46,12 @@ main.py (FileSyncPlugin ~530行)                     ← 插件生命周期 + �
 
 ### 同步流程
 
-**五层过滤** (见 [main.py:sync_group](file_sync_plugin2/main.py#L340)):
+**三种触发方式**:
+1. **监听上传即时同步** — `handle_file_upload()` 命名合规 → `sync_uploaded_file()` 即时上传
+2. **定时同步** — `_sync_loop()` → `sync_all_groups()` → `sync_group()`
+3. **手动命令** — `/同步文件` → `sync_all_groups()`
+
+**五层过滤** (见 [main.py:sync_group](file_sync_plugin2/main.py#L376)):
 1. 文件类型: `is_file_type_allowed()` → 跳过
 2. 时间戳: `upload_time <= last_sync_time` → 跳过
 3. file_id 精确匹配: `is_synced(file_id)` → 跳过
@@ -54,6 +59,8 @@ main.py (FileSyncPlugin ~530行)                     ← 插件生命周期 + �
 5. 命名规范: `naming_validator.parse()` 不合规且非数据组测试 → 跳过
 
 **路径优先级**: preset_path (SQLite group_bindings) > base_path 回退
+
+**启动时自动种子化**: `config.startup_presets` → WebDAV 校验路径存在 → 写入 SQLite
 
 **开关**: `sync_enabled=false` → 定时循环不启动; `enabled_groups` 作为安全开关
 
