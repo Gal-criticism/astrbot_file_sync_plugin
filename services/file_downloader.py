@@ -51,7 +51,7 @@ class FileDownloader:
             - success=True → local_path 是临时文件路径
             - success=False → error_stage + error_detail 描述失败原因
         """
-        logger.info(f"[DOWNLOAD] 开始下载: {file_name} (ID: {file_id}, 大小: {file_size / (1024*1024):.1f} MB)")
+        logger.info(f"[DOWNLOAD] 开始下载: {file_name} (ID: {file_id}, 大小: {(file_size or 0) / (1024*1024):.1f} MB)")
 
         # 获取下载链接
         file_url = await self.get_file_url(group_id, file_id)
@@ -64,7 +64,8 @@ class FileDownloader:
         local_path = temp_dir / file_name
 
         # 根据文件大小动态调整超时（至少10分钟，每MB增加15秒）
-        download_timeout = max(600, file_size // (1024 * 1024) * 15)
+        safe_size = file_size or 0
+        download_timeout = max(600, safe_size // (1024 * 1024) * 15)
         logger.info(f"[DOWNLOAD] 下载超时设置: {download_timeout} 秒")
 
         downloaded_size = 0

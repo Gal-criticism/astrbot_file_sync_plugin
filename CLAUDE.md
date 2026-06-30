@@ -5,6 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 项目概述
 
 `file_sync_plugin2/` 是一个 AstrBot 插件，用于将 QQ 群文件自动同步到 NextCloud 私有云盘。支持命名规范校验、预设路径与群绑定、五层过滤、细化诊断日志。
+git 仓库地址：E:\githubproject\astrbot_plugin_document_sync\file_sync_plugin2 
 
 ## 开发命令
 

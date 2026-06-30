@@ -1,6 +1,8 @@
 from datetime import datetime
 from pathlib import Path
 
+from .constants import CN_TZ
+
 
 def generate_unique_filename(original_name: str) -> str:
     """
@@ -26,6 +28,6 @@ def generate_unique_filename(original_name: str) -> str:
     path = Path(original_name)
     stem = path.stem
     suffix = path.suffix
-    now = datetime.now()
+    now = datetime.now(CN_TZ)
     timestamp = now.strftime("%Y%m%d_%H%M%S") + f"_{now.microsecond:06d}"
     return f"{stem}_{timestamp}{suffix}"

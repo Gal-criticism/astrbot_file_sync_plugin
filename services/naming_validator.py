@@ -258,15 +258,24 @@ class NamingValidator:
                 "reason": f"未识别到有效分类，可用分类：{self.format_categories()}"
             })
 
-        # 提取项目名称
+        # 提取项目名称（过滤掉版本号-only 的 parts，如 "项目A-v1-成片" 中的 v1）
         if category:
-            project_name = self.NEW_SEPARATOR.join(parts[:cat_index]) if cat_index > 0 else parts[0]
+            proj_parts = parts[:cat_index] if cat_index > 0 else [parts[0]]
+            filtered = [p for p in proj_parts if not VERSION_PATTERN.fullmatch(p.strip().lower())]
+            project_name = self.NEW_SEPARATOR.join(filtered) if filtered else proj_parts[0]
         else:
             project_name = parts[0]
 
-        # 提取版本号
+        # 提取版本号（检查分类部件中嵌入的版本号，以及项目名与分类之间独立版本号部件）
         if category and cat_index < len(parts):
             version = self._extract_version(parts[cat_index])
+            # 如果分类部件中没有版本号，检查项目名与分类之间的版本号-only 部件
+            if version is None and cat_index > 1:
+                for vpart in reversed(parts[1:cat_index]):
+                    v = self._extract_version(vpart)
+                    if v is not None:
+                        version = v
+                        break
 
         # 后缀
         if category and cat_index < len(parts):
@@ -436,8 +445,11 @@ class NamingValidator:
     # ===== 辅助方法 =====
 
     def _find_category_in_parts(self, parts: List[str]) -> Tuple[int, Optional[str], Optional[str]]:
-        """从右向左扫描部件，找到第一个匹配的分类关键词"""
-        for i in range(len(parts) - 1, -1, -1):
+        """从左向右扫描部件（跳过索引0的项目名部分），找到第一个匹配的分类关键词
+
+        优先匹配最靠近项目名的分类，避免后缀中的关键词意外覆盖正确分类。
+        """
+        for i in range(1, len(parts)):
             part = parts[i]
             part_no_version = VERSION_PATTERN.sub('', part).strip('-')
             category = self._resolve_category(part_no_version)

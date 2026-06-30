@@ -25,21 +25,23 @@ def ensure_list(value) -> list:
     if not isinstance(value, list):
         return []
 
-    # 再处理列表内每个元素（可能嵌套了字符串化的列表）
+    # 递归展开嵌套列表
     result = []
     for item in value:
+        if isinstance(item, list):
+            result.extend(ensure_list(item))
+            continue
         if isinstance(item, str):
+            # 尝试解析嵌套 JSON 字符串列表
             try:
                 parsed = json.loads(item)
                 if isinstance(parsed, list):
-                    result.extend(parsed)
+                    result.extend(ensure_list(parsed))
                     continue
             except (json.JSONDecodeError, TypeError):
                 pass
             if item.strip():
                 result.append(item.strip())
-        elif isinstance(item, list):
-            result.extend(ensure_list(item))
         else:
             result.append(item)
     return result

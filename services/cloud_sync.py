@@ -44,6 +44,8 @@ class CloudSyncService:
         self._dav_path = urlparse(self._dav_url).path.rstrip('/')
 
         logger.info(f"NextCloud WebDAV URL: {self._dav_url}")
+        if not self._dav_url.startswith("https://"):
+            logger.warning("NextCloud 未使用 HTTPS 连接，密码以明文传输")
         self._test_connection()
 
     def _test_connection(self):
@@ -291,7 +293,7 @@ class CloudSyncService:
                 url = f"{self._dav_url}{encoded_remote_path}"
 
                 # 根据文件大小动态调整超时（至少10分钟，每MB增加15秒）
-                timeout = max(600, file_size // (1024 * 1024) * 15)
+                timeout = max(600, actual_size // (1024 * 1024) * 15)
                 logger.info(f"[UPLOAD] 超时设置: {timeout} 秒, URL: {url}")
 
                 start_time = time.time()
@@ -315,16 +317,14 @@ class CloudSyncService:
                         if attempt < max_retries - 1:
                             time.sleep(10)
                             continue
-                        return False, "upload_http_error",
-                        f"HTTP {response.status_code}: {response.text[:100]}"
+                        return False, "upload_http_error", f"HTTP {response.status_code}: {response.text[:100]}"
 
             except httpx.TimeoutException:
                 logger.error(f"[UPLOAD] 上传超时 (第 {attempt + 1} 次)")
                 if attempt < max_retries - 1:
                     time.sleep(30)
                     continue
-                return False, "upload_timeout",
-                f"超时 ({timeout}s), 第 {attempt + 1}/{max_retries} 次"
+                return False, "upload_timeout", f"超时 ({timeout}s), 第 {attempt + 1}/{max_retries} 次"
             except httpx.HTTPError as e:
                 logger.error(f"[UPLOAD] HTTP 错误: {type(e).__name__}: {e}")
                 if attempt < max_retries - 1:

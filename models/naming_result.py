@@ -50,10 +50,12 @@ class NamingResult:
     group_id: str = ""
 
     def __post_init__(self):
-        """从 errors 列表同步首个错误到快捷字段"""
+        """从 errors 列表同步首个错误到快捷字段，反之亦然"""
         if self.errors and not self.error_type:
             self.error_type = self.errors[0]["type"]
             self.error_reason = self.errors[0]["reason"]
+        if self.error_type and not self.errors:
+            self.errors.append({"type": self.error_type, "reason": self.error_reason or ""})
 
     def add_error(self, error_type: str, error_reason: str):
         """添加一个错误"""

@@ -116,25 +116,23 @@ class StateManager:
 
     def add_to_retry_queue(self, file_id: str, file_name: str, file_size: int,
                           group_id: str, target_path: str, delay_seconds: int = 300):
-        """加入重试队列"""
+        """加入重试队列（UPSERT 原子操作，避免并发竞态）"""
         from datetime import timedelta
         next_retry = (datetime.now(CN_TZ) + timedelta(seconds=delay_seconds)).isoformat()
         conn = self._get_conn()
 
-        # 先尝试UPDATE，累加attempts
-        cursor = conn.execute("""
-            UPDATE retry_queue SET attempts = attempts + 1, next_retry = ?,
-            file_name = ?, file_size = ?, group_id = ?, target_path = ?
-            WHERE file_id = ?
-        """, (next_retry, file_name, file_size, group_id, target_path, file_id))
-
-        # 如果没有更新任何行（记录不存在），则插入新记录
-        if cursor.rowcount == 0:
-            conn.execute("""
-                INSERT INTO retry_queue
+        conn.execute("""
+            INSERT INTO retry_queue
                 (file_id, file_name, file_size, group_id, target_path, attempts, next_retry, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (file_id, file_name, file_size, group_id, target_path, 1, next_retry, datetime.now(CN_TZ).isoformat()))
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(file_id) DO UPDATE SET
+                attempts = attempts + 1,
+                next_retry = excluded.next_retry,
+                file_name = excluded.file_name,
+                file_size = excluded.file_size,
+                group_id = excluded.group_id,
+                target_path = excluded.target_path
+        """, (file_id, file_name, file_size, group_id, target_path, next_retry, datetime.now(CN_TZ).isoformat()))
         conn.commit()
 
     def get_pending_retries(self) -> List[dict]:
@@ -286,18 +284,22 @@ class StateManager:
         """从 NextCloud 远程文件列表批量写入 SQLite，用于插件启动时预热查重数据
 
         remote_files: list of dict，每项包含 file_name, file_size, remote_path
+
+        注意：预热数据主要用于 is_synced_by_name_size()（文件名+大小+群号去重），
+        因为 QQ file_id 与 remote_path 不同 namespace，is_synced(file_id) 无法命中预热记录。
+        但五层过滤中第4层 name+size 去重会生效，此场景已覆盖。
         """
         conn = self._get_conn()
         now = datetime.now(CN_TZ).isoformat()
         for item in remote_files:
-            # 用 remote_path 作为 file_id 的替代（远程路径唯一）
-            # 同时用 file_name + file_size + group_id 做去重（兼容本地查重逻辑）
+            # 使用合成 file_id（remote_path 加前缀），避免与 QQ file_id namespace 冲突
+            synthetic_file_id = f"warmup:{item['remote_path']}"
             conn.execute("""
                 INSERT OR IGNORE INTO sync_records
                 (file_id, file_name, file_size, group_id, target_path, sync_time)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (
-                item["remote_path"],
+                synthetic_file_id,
                 item["file_name"],
                 item.get("file_size", 0),
                 group_id,
