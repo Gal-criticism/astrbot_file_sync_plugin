@@ -109,19 +109,20 @@ class FileDownloader:
             logger.error(f"[DOWNLOAD] 下载的文件不存在: {local_path}")
             return False, None, "download_file_missing", f"文件未写入: {local_path}"
 
-        actual_size = local_path.stat().st_size
-        if actual_size != file_size:
-            logger.error(
-                f"[DOWNLOAD] 文件大小不匹配! 预期: {file_size}, 实际: {actual_size}"
-                f" ({actual_size / (1024*1024):.2f} MB vs {file_size / (1024*1024):.2f} MB)"
-            )
-            # 删除不完整的文件
-            try:
-                local_path.unlink()
-            except Exception:
-                pass
-            return False, None, "download_size_mismatch",
-            f"预期 {file_size} 字节, 实际 {actual_size} 字节"
+        # 跳过 file_size 为 0 的大小校验（监听上传时走，无法获知精确大小）
+        if file_size and file_size > 0:
+            actual_size = local_path.stat().st_size
+            if actual_size != file_size:
+                logger.error(
+                    f"[DOWNLOAD] 文件大小不匹配! 预期: {file_size}, 实际: {actual_size}"
+                    f" ({actual_size / (1024*1024):.2f} MB vs {file_size / (1024*1024):.2f} MB)"
+                )
+                # 删除不完整的文件
+                try:
+                    local_path.unlink()
+                except Exception:
+                    pass
+                return False, None, "download_size_mismatch", f"预期 {file_size} 字节, 实际 {actual_size} 字节"
 
         return True, str(local_path), None, None
 

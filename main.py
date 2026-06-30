@@ -14,6 +14,7 @@ from .services.cloud_sync import CloudSyncService
 from .services.state_manager import StateManager
 from .services.naming_validator import NamingValidator
 from .models.sync_record import SyncRecord
+from .models.sync_result import SyncResult
 
 
 @register("file_sync_plugin", "Developer", "QQ群文件自动同步NextCloud", "1.0.0")
@@ -175,6 +176,50 @@ class FileSyncPlugin(Star):
                 except Exception as e:
                     logger.warning(f"群 {group_id} 预热失败: {e}")
             logger.info(f"查重数据预热完成，共处理 {warmed_groups} 个群")
+
+        # 种子化预设路径（从配置写入 SQLite）
+        if self.config and self.state_manager and self.cloud_sync:
+            added = self._init_preset_paths()
+            if added > 0:
+                logger.info(f"预设路径初始化完成，新添加 {added} 条")
+
+    def _init_preset_paths(self) -> int:
+        """从配置读取 startup_presets，校验路径存在后写入 SQLite
+
+        Returns:
+            int: 新添加的预设路径数量（已有同名则视为更新，不计数）
+        """
+        if not self.config or not self.state_manager or not self.cloud_sync:
+            logger.warning("配置/状态管理器/云同步服务未就绪，跳过预设路径初始化")
+            return 0
+
+        presets = getattr(self.config, 'startup_presets', None)
+        if not presets or not isinstance(presets, dict):
+            logger.info("未配置 startup_presets，跳过预设路径初始化")
+            return 0
+
+        logger.info(f"开始初始化预设路径（共 {len(presets)} 条）...")
+        added = 0
+        for name, path in presets.items():
+            path = "/" + path.lstrip("/")
+            try:
+                # WebDAV 校验路径是否存在
+                if not self.cloud_sync._path_exists(path):
+                    logger.warning(f"预设路径不存在，跳过: {name} → {path}")
+                    continue
+
+                success, msg = self.state_manager.add_preset_path(name, path)
+                if success:
+                    logger.info(f"预设路径已添加/更新: {name} → {path}")
+                    # 判断是新增（捕获 IntegrityError 更新旧记录不算新增）
+                    # 但 add_preset_path 返回的 msg 不可靠判断新增/更新，简单计数
+                    added += 1
+                else:
+                    logger.warning(f"预设路径添加失败: {name} → {path} - {msg}")
+            except Exception as e:
+                logger.error(f"预设路径初始化异常 {name} → {path}: {e}")
+
+        return added
 
     async def terminate(self):
         """插件卸载时调用"""
@@ -422,10 +467,13 @@ class FileSyncPlugin(Star):
 
             # 预先解析分类和项目名（缓存，避免重复解析）
             category = self.config._extract_category_from_filename(file_name)
+            naming_result = None
             project_name = None
-            if category and self.naming_validator:
-                parsed = self.naming_validator.parse(file_name)
-                project_name = parsed.project_name
+            if self.naming_validator:
+                naming_result = self.naming_validator.parse(file_name)
+                if naming_result:
+                    project_name = naming_result.project_name
+                    category = naming_result.category or category
 
             # ── 过滤 1: 文件类型 ──
             if not self.config.is_file_type_allowed(file_name):
@@ -469,15 +517,14 @@ class FileSyncPlugin(Star):
                 })
                 continue
 
-            # ── 过滤 5: 命名规范校验（非标准分类且非数据组测试 → 跳过）──
-            if self.config.filename_check_enabled and category:
-                naming_result = self.naming_validator.parse(file_name) if self.naming_validator else None
-                if naming_result and not naming_result.is_valid and category != "数据组测试":
+            # ── 过滤 5: 命名规范校验（不合规且非数据组测试 → 跳过）
+            if self.config.filename_check_enabled and naming_result is not None:
+                if not naming_result.is_valid and naming_result.category != "数据组测试":
                     skipped_count["naming_invalid"] = skipped_count.get("naming_invalid", 0) + 1
                     self.state_manager.add_diagnostic_log("skip", f"命名不合规且非数据组测试: {file_name}", {
                         "reason": "naming_invalid",
                         "file_name": file_name,
-                        "category": category,
+                        "category": naming_result.category,
                         "group_id": group_id,
                     })
                     continue
@@ -559,6 +606,65 @@ class FileSyncPlugin(Star):
             file_name=file_name,
             file_size=file_size,
         )
+
+    async def sync_uploaded_file(self, group_id: str, file_id: str, file_name: str,
+                                  file_size: int = 0, sender_id: str = "",
+                                  sender_name: str = "") -> SyncResult:
+        """上传事件触发同步：命名合规的文件即时上传到 NextCloud
+
+        路径生成逻辑（与 sync_group 一致）：
+        1. 查 SQLite group_bindings → 群绑定预设路径
+        2. 用命名解析结果生成子目录
+        3. 拼接完整远程路径
+
+        Args:
+            group_id: 群号
+            file_id: 群文件 ID
+            file_name: 文件名
+            file_size: 文件大小（监听上传时可能为 0）
+            sender_id: 上传者 QQ
+            sender_name: 上传者昵称
+
+        Returns:
+            SyncResult 同步结果
+        """
+        logger.info(f"[UPLOAD_SYNC] 上传触发同步: {file_name}")
+
+        # 获取群信息（用于回退路径生成）
+        group_name, _ = await self.get_group_info(group_id)
+
+        # 路径生成
+        preset_base = self.state_manager.get_group_binding(group_id) if self.state_manager else None
+        category = self.config._extract_category_from_filename(file_name)
+        project_name = None
+        if category and self.naming_validator:
+            parsed = self.naming_validator.parse(file_name)
+            project_name = parsed.project_name
+        target_path = self.config.generate_target_path(
+            group_name, group_id, file_name, category, project_name, preset_base
+        )
+
+        # 执行同步（下载 → 上传）
+        result = await self._sync_single_file(
+            group_id=group_id,
+            target_path=target_path,
+            file_id=file_id,
+            file_name=file_name,
+            file_size=file_size,
+        )
+
+        if result.success:
+            record = SyncRecord(
+                file_id=file_id, file_name=file_name, file_size=file_size,
+                group_id=group_id, target_path=target_path,
+                sync_time=datetime.now(CN_TZ)
+            )
+            self.state_manager.add_sync_record(record)
+            logger.info(f"[UPLOAD_SYNC] 同步成功: {file_name} -> {target_path}")
+        else:
+            logger.warning(f"[UPLOAD_SYNC] 同步失败: {file_name} - {result.failed_stage}: {result.failed_detail}")
+
+        return result
 
     # ===== 重试队列 =====
 

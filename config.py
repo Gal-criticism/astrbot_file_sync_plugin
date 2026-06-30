@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, validator
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime
 
 # 六大标准分类的默认扩展名映射
@@ -55,6 +55,12 @@ class FileSyncConfig(BaseModel):
         description="@提醒模板"
     )
 
+    # 预设路径（启动时自动种子化到 SQLite，运行时以 SQLite 为准）
+    startup_presets: Dict[str, str] = Field(
+        default_factory=dict,
+        description="预设路径映射 {名称: NextCloud路径}，启动时自动校验并写入 SQLite。示例：{\"游戏评测\": \"/Galgame批评主文件夹/02_原创内容/a_游戏评测\"}"
+    )
+
     @validator("sync_time_points", pre=True)
     def validate_sync_time_points(cls, v):
         """验证时间点格式"""
@@ -99,17 +105,7 @@ class FileSyncConfig(BaseModel):
         return {}
 
     def get_preset_paths(self) -> dict:
-        """获取解析后的预设路径映射"""
-        import json
-        raw = self.preset_paths
-        if not raw:
-            return {}
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return parsed
-        except (json.JSONDecodeError, ValueError):
-            pass
+        """[deprecated] 旧 JSON 配置读取 — 预设路径已迁移到 SQLite。返回空。"""
         return {}
 
     def get_preset_path(self, project_name: str) -> Optional[str]:
