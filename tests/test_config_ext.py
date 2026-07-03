@@ -140,6 +140,16 @@ def test_extract_category_no_extension():
     assert cfg._extract_category_from_filename("项目A-成片v1") == "成片"
 
 
+def test_extract_category_with_extra():
+    """extra_categories 传入后应能识别自定义分类"""
+    cfg = _make_config()
+    # 直接调用静态方法验证参数传递
+    from file_sync_plugin2.services.naming_validator import NamingValidator
+    v = NamingValidator(extra_categories={"文档类": {"extensions": ["pdf"], "keywords": ["doc", "report"]}})
+    result = v.parse("项目A-doc-v1.pdf")
+    assert result.category == "文档类"
+
+
 # ──────── get_naming_extra_categories ────────
 
 def test_get_naming_extra_categories_default():
@@ -219,3 +229,58 @@ def test_generate_target_path_preset_with_category():
     assert "/客户/项目A" in path
     assert "成片" in path
     assert "项目A-成片v1.mp4" in path
+
+
+def test_generate_target_path_preset_no_category():
+    """preset_base 有效但 category=None → 仍应使用预设路径"""
+    cfg = _make_config()
+    path = cfg.generate_target_path(
+        "测试群", "123456", "no_category_file.txt",
+        category=None, project_name=None,
+        preset_base="/客户/项目A",
+    )
+    assert "/客户/项目A" in path, f"应使用预设路径，实际: {path}"
+    assert path.endswith("no_category_file.txt"), f"文件名应在末尾，实际: {path}"
+
+
+def test_generate_target_path_with_naming_result():
+    """传入 naming_result 时路径正确、不复解析"""
+    from file_sync_plugin2.services.naming_validator import NamingValidator
+
+    cfg = _make_config()
+    validator = NamingValidator()
+    naming_result = validator.parse("项目A-成片v1.mp4")
+
+    # 有 preset_base + naming_result
+    path = cfg.generate_target_path(
+        "测试群", "123456", "项目A-成片v1.mp4",
+        naming_result=naming_result,
+        preset_base="/客户/项目A",
+    )
+    assert "/客户/项目A" in path
+    assert "成片" in path
+    assert "项目A-成片v1.mp4" in path
+
+    # 无 preset_base, 但有 naming_result → 走 base_path 回退
+    path2 = cfg.generate_target_path(
+        "测试群", "123456", "项目A-成片v1.mp4",
+        naming_result=naming_result,
+    )
+    assert "/QQ群文件" in path2
+
+
+def test_generate_target_path_no_naming_result_backward_compat():
+    """不传 naming_result 时行为与原来一致"""
+    cfg = _make_config(path_template="{group_name}_{group_id}/{file_type}")
+
+    # 无 category，不传 naming_result
+    path1 = cfg.generate_target_path("测试群", "123456", "report.pdf")
+    assert "测试群_123456" in path1
+    assert "pdf" in path1
+
+    # 有 category，不传 naming_result
+    path2 = cfg.generate_target_path(
+        "测试群", "123456", "项目A-成片v1.mp4",
+        category="成片", project_name="项目A",
+    )
+    assert "成片" in path2
