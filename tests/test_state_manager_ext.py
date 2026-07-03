@@ -408,3 +408,72 @@ def test_close_releases_connection(temp_db):
     ))
     sm.close()
     assert sm._conn is None
+
+
+# ──────── upload_failures ────────
+
+def test_add_upload_failure(temp_db):
+    sm = StateManager(temp_db)
+    sm.add_upload_failure("bad.mp4", "g1", "upload_error", "HTTP 503",
+                          sender_id="123", sender_name="用户A")
+    stats = sm.get_upload_stats_by_group("g1")
+    assert len(stats) == 1
+    assert stats[0]["fail_count"] == 1
+    assert stats[0]["success_count"] == 0
+
+
+def test_upload_stats_with_success_and_fail(temp_db):
+    sm = StateManager(temp_db)
+    now = datetime.now(CN_TZ)
+    # 一个成功的
+    sm.add_sync_record(SyncRecord(
+        file_id="f1", file_name="good.mp4", file_size=100,
+        group_id="g1", target_path="/t", sync_time=now,
+        source="upload", sender_id="111", sender_name="用户A",
+    ))
+    # 两个失败的
+    sm.add_upload_failure("bad1.mp4", "g1", "upload_error", "HTTP 503",
+                          sender_id="222", sender_name="用户B")
+    sm.add_upload_failure("bad2.mp4", "g1", "download_error", "no url",
+                          sender_id="333", sender_name="用户C")
+
+    stats = sm.get_upload_stats_by_group("g1")
+    assert len(stats) == 1
+    assert stats[0]["success_count"] == 1
+    assert stats[0]["fail_count"] == 2
+    assert len(stats[0]["recent_records"]) == 3
+
+
+def test_upload_stats_all_groups(temp_db):
+    sm = StateManager(temp_db)
+    now = datetime.now(CN_TZ)
+    sm.add_sync_record(SyncRecord(
+        file_id="f1", file_name="a.mp4", file_size=100,
+        group_id="g1", target_path="/t", sync_time=now,
+        source="upload",
+    ))
+    sm.add_sync_record(SyncRecord(
+        file_id="f2", file_name="b.mp4", file_size=200,
+        group_id="g2", target_path="/t", sync_time=now,
+        source="upload",
+    ))
+    sm.add_upload_failure("bad.mp4", "g1", "err", "msg")
+
+    stats = sm.get_upload_stats_by_group()  # 所有群
+    assert len(stats) == 2
+    g1 = [s for s in stats if s["group_id"] == "g1"][0]
+    g2 = [s for s in stats if s["group_id"] == "g2"][0]
+    assert g1["success_count"] == 1 and g1["fail_count"] == 1
+    assert g2["success_count"] == 1 and g2["fail_count"] == 0
+
+
+def test_upload_stats_no_upload_records(temp_db):
+    sm = StateManager(temp_db)
+    # 只有定时同步记录，没有监听上传
+    sm.add_sync_record(SyncRecord(
+        file_id="f1", file_name="a.mp4", file_size=100,
+        group_id="g1", target_path="/t", sync_time=datetime.now(CN_TZ),
+        source="scheduled",
+    ))
+    stats = sm.get_upload_stats_by_group("g1")
+    assert stats[0]["success_count"] == 0
