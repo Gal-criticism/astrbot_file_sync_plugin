@@ -2,6 +2,8 @@
 
 from astrbot.api import logger
 
+from ..utils.command_parser import parse_angle_args, smart_split
+
 
 class SyncCommandHandler:
     """同步命令处理（/同步文件、/同步状态、/同步统计、/同步调试）"""
@@ -38,51 +40,41 @@ class SyncCommandHandler:
             yield event.plain_result(f"同步完成，共处理 {synced_count} 个群")
 
     async def handle_sync_status(self, event):
-        """查看同步状态"""
+        """查看同步状态（精简版，重定向到统计）"""
         if not self.state_manager:
             yield event.plain_result("状态管理器未初始化")
             return
-        stats = self.state_manager.get_sync_stats()
-        yield event.plain_result(
-            f"已同步文件: {stats['total_synced']}\n"
-            f"待重试: {stats['pending_retries']}"
-        )
+        async for result in self.handle_sync_stats(event):
+            yield result
 
     async def handle_sync_stats(self, event):
-        """查看同步统计"""
+        """查看监听上传统计（按群展示）"""
         if not self.state_manager:
             yield event.plain_result("状态管理器未初始化")
             return
 
-        args = event.message_str.strip().split()
-        group_id = args[1] if len(args) > 1 else None
+        group_id = event.get_group_id()  # 群聊时有值，私聊时为 None
+        stats = self.state_manager.get_upload_stats_by_group(group_id=group_id)
 
-        if group_id:
-            stats = self.state_manager.get_group_stats(group_id)
-            msg = f"=== 群 {group_id} 同步统计 ===\n"
-            msg += f"已同步文件: {stats['synced']}\n"
-            msg += f"待重试: {stats['pending']}\n"
-            msg += f"最后同步: {stats['last_sync_time'] or '从未同步'}\n"
-            if stats['recent_files']:
-                msg += "\n最近同步文件:\n"
-                for f in stats['recent_files']:
-                    msg += f"- {f['name']} ({f['size']} 字节)\n"
-        else:
-            total_stats = self.state_manager.get_sync_stats()
-            group_stats = self.state_manager.get_sync_stats_by_group()
+        if not stats:
+            yield event.plain_result("暂无监听上传记录")
+            return
 
-            msg = "=== 同步统计总览 ===\n"
-            msg += f"总同步文件: {total_stats['total_synced']}\n"
-            msg += f"总待重试: {total_stats['pending_retries']}\n"
-            msg += f"启用群数: {len(self.config.enabled_groups) if self.config else 0}\n"
+        msg = "=== 监听上传统计 ===\n"
+        for g in stats:
+            msg += f"\n群 {g['group_id']}:\n"
+            msg += f"  成功同步: {g['success_count']} 个\n"
+            msg += f"  同步失败: {g['fail_count']} 个\n"
+            last = g['last_upload_time']
+            msg += f"  最后上传: {last or '无'}\n"
 
-            if group_stats:
-                msg += "\n=== 分群统计 ===\n"
-                for gid, stats in group_stats.items():
-                    msg += f"\n群 {gid}:\n"
-                    msg += f"  已同步: {stats['synced']}\n"
-                    msg += f"  待重试: {stats['pending']}\n"
-                    msg += f"  最后同步: {stats['last_sync_time'] or '从未同步'}\n"
+            if g['recent_records']:
+                msg += "\n最近上传:\n"
+                for r in g['recent_records']:
+                    icon = "✓" if r['status'] == 'success' else "✗"
+                    sender = f"({r['sender_name']})" if r['sender_name'] else ""
+                    detail = f" —— {r['detail']}" if r['detail'] else ""
+                    msg += f"  {icon} {r['file_name']} {sender} {r['time'][:16]}{detail}\n"
 
         yield event.plain_result(msg)
 
@@ -138,7 +130,7 @@ class SyncCommandHandler:
             yield event.plain_result("配置未初始化")
             return
 
-        args = event.message_str.strip().split()
+        args = smart_split(event.message_str)
         subcmd = args[1] if len(args) > 1 else "list"
         sm = self._plugin.state_manager
 
@@ -160,8 +152,14 @@ class SyncCommandHandler:
             if len(args) < 4:
                 yield event.plain_result("用法: /预设路径 添加 <名称> <NextCloud路径>\n例如: /预设路径 添加 项目A /客户/项目A")
                 return
-            name = args[2]
-            path = args[3]
+
+            angle_args = parse_angle_args(event.message_str, 2)
+            if angle_args:
+                name, path = angle_args[0], angle_args[1]
+            else:
+                name = args[2]
+                path = " ".join(args[3:])  # fallback: 路径可能含空格
+
             path = "/" + path.lstrip("/")
 
             # 通过 WebDAV 校验路径存在
@@ -177,7 +175,8 @@ class SyncCommandHandler:
             if len(args) < 3:
                 yield event.plain_result("用法: /预设路径 删除 <名称>")
                 return
-            result, msg = sm.delete_preset_path(args[2])
+            name = parse_angle_args(event.message_str, 1)[0] if parse_angle_args(event.message_str, 1) else " ".join(args[2:])
+            result, msg = sm.delete_preset_path(name)
             yield event.plain_result(msg)
 
         # ── /绑定路径 ──
@@ -185,8 +184,12 @@ class SyncCommandHandler:
             if len(args) < 3:
                 yield event.plain_result("用法: /绑定路径 <群号> <路径名称>\n例如: /绑定路径 123456 项目A")
                 return
-            gid = args[2]
-            pname = args[3]
+            angle_args = parse_angle_args(event.message_str, 2)
+            if angle_args:
+                gid, pname = angle_args[0], angle_args[1]
+            else:
+                gid = args[2]
+                pname = " ".join(args[3:])
             result, msg = sm.bind_group(gid, pname)
             yield event.plain_result(msg)
 
@@ -195,7 +198,9 @@ class SyncCommandHandler:
             if len(args) < 3:
                 yield event.plain_result("用法: /解绑路径 <群号>")
                 return
-            result, msg = sm.unbind_group(args[2])
+            angle_args = parse_angle_args(event.message_str, 1)
+            gid = angle_args[0] if angle_args else args[2]
+            result, msg = sm.unbind_group(gid)
             yield event.plain_result(msg)
 
         # ── /绑定列表 ──
