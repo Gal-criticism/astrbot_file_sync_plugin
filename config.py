@@ -2,13 +2,14 @@ from pydantic import BaseModel, Field, validator
 from typing import List, Optional, Dict
 from datetime import datetime
 
-# 六大标准分类的默认扩展名映射
+# 七大标准分类的默认扩展名映射
 DEFAULT_CATEGORY_EXTENSIONS = {
+    "文案": ["docx", "pdf"],
     "封面": ["png", "jpg", "jpeg", "psd"],
     "成片": ["mp4"],
-    "素材": ["png", "jpg", "jpeg", "psd", "mp4", "mov", "avi", "webm", "gif", "svg",
-             "ai", "eps", "cdr", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-             "zip", "rar", "7z", "txt"],
+    "素材": ["png", "jpg", "jpeg", "psd", "gif", "svg",
+             "ai", "eps", "cdr",
+             "mp4", "mov", "avi", "webm"],
     "音频": ["wav", "flac", "mp3", "aac", "ogg", "wma", "m4a"],
     "字幕": ["ass", "srt", "vtt", "ssa"],
     "数据组测试": ["*"],
@@ -137,9 +138,10 @@ class FileSyncConfig(BaseModel):
     def get_category_subdir(self, category: str) -> str:
         """根据分类返回云盘子目录名
 
-        六大标准分类：封面 / 成片 / 素材 / 音频 / 字幕 / 数据组测试
+        七大标准分类：文案 / 封面 / 成片 / 素材 / 音频 / 字幕 / 数据组测试
         """
         standard_subdirs = {
+            "文案": "文案",
             "封面": "封面",
             "成片": "成片",
             "素材": "素材",
@@ -228,7 +230,9 @@ class FileSyncConfig(BaseModel):
         from .services.naming_validator import NamingValidator
 
         if category is None:
-            category = self._extract_category_from_filename(filename)
+            category = self._extract_category_from_filename(
+                filename, self.get_naming_extra_categories()
+            )
 
         # 调用方已传 preset_base，则使用它
         if category and preset_base:
@@ -260,29 +264,22 @@ class FileSyncConfig(BaseModel):
         return f"{self.base_path}/{path}"
 
     @staticmethod
-    def _extract_category_from_filename(filename: str) -> Optional[str]:
-        """从文件名中提取标准分类（用于目标路径生成）"""
-        from .services.naming_validator import CATEGORY_KEYWORD_MAP
-        stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+    def _extract_category_from_filename(
+        filename: str,
+        extra_categories: Optional[dict] = None,
+    ) -> Optional[str]:
+        """从文件名中提取标准分类（用于目标路径生成）
 
-        # 检查旧格式 --
-        if "--" in stem:
-            parts = stem.split("--", 1)
-            keyword = parts[0].strip()
-            if keyword in CATEGORY_KEYWORD_MAP:
-                return CATEGORY_KEYWORD_MAP[keyword]
+        使用 NamingValidator 的匹配逻辑（包含子串、前缀匹配），
+        而非仅精确匹配。
 
-        # 检查新格式 -
-        parts = [p.strip() for p in stem.split("-") if p.strip()]
-        for i in range(len(parts) - 1, -1, -1):
-            part = parts[i]
-            # 去掉版本号
-            import re
-            part_clean = re.sub(r'v\d+', '', part).strip('-')
-            if part_clean in CATEGORY_KEYWORD_MAP:
-                return CATEGORY_KEYWORD_MAP[part_clean]
-
-        return None
+        Args:
+            filename: 文件名
+            extra_categories: 自定义扩展分类字典，来自 config.get_naming_extra_categories()
+        """
+        from .services.naming_validator import NamingValidator
+        validator = NamingValidator(extra_categories=extra_categories)
+        return validator.extract_category(filename)
 
 
 def validate_config(config: dict) -> FileSyncConfig:

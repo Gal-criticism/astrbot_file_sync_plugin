@@ -158,7 +158,7 @@ class FileSyncPlugin(Star):
         self._file_event_handler = FileEventHandler(self)
 
         # 预热：从 NextCloud 远程文件列表填充 SQLite 查重数据
-        if self.config and self.config.enabled_groups and self.cloud_sync and self.state_manager:
+        if self.config and self.config.sync_enabled and self.config.enabled_groups and self.cloud_sync and self.state_manager:
             logger.info("开始预热 SQLite 查重数据...")
             warmed_groups = 0
             for group_id in self.config.enabled_groups:
@@ -173,7 +173,7 @@ class FileSyncPlugin(Star):
                         warmed_groups += 1
                     else:
                         logger.info(f"群 {group_id} 远程目录无文件，预热跳过")
-                except Exception as e:
+                except (Exception, asyncio.CancelledError) as e:
                     logger.warning(f"群 {group_id} 预热失败: {e}")
             logger.info(f"查重数据预热完成，共处理 {warmed_groups} 个群")
 
@@ -408,7 +408,7 @@ class FileSyncPlugin(Star):
             result = await client.api.call_action("get_group_info", group_id=int(group_id))
             group_name = result.get("group_name", f"Group_{group_id}")
             return (group_name, group_id)
-        except Exception as e:
+        except (Exception, asyncio.CancelledError) as e:
             logger.warning(f"获取群 {group_id} 信息失败: {e}")
             return (f"Group_{group_id}", group_id)
 
@@ -466,7 +466,9 @@ class FileSyncPlugin(Star):
             upload_time = datetime.fromtimestamp(upload_time_ts, tz=CN_TZ) if upload_time_ts else None
 
             # 预先解析分类和项目名（缓存，避免重复解析）
-            category = self.config._extract_category_from_filename(file_name)
+            category = self.config._extract_category_from_filename(
+                file_name, self.config.get_naming_extra_categories()
+            )
             naming_result = None
             project_name = None
             if self.naming_validator:
@@ -635,11 +637,16 @@ class FileSyncPlugin(Star):
 
         # 路径生成
         preset_base = self.state_manager.get_group_binding(group_id) if self.state_manager else None
-        category = self.config._extract_category_from_filename(file_name)
+        category = self.config._extract_category_from_filename(
+            file_name, self.config.get_naming_extra_categories()
+        )
         project_name = None
-        if category and self.naming_validator:
+        parsed = None
+        if self.naming_validator:
             parsed = self.naming_validator.parse(file_name)
-            project_name = parsed.project_name
+            if parsed:
+                project_name = parsed.project_name
+                category = parsed.category or category
         target_path = self.config.generate_target_path(
             group_name, group_id, file_name, category, project_name, preset_base
         )
