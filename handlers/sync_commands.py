@@ -189,8 +189,15 @@ class SyncCommandHandler:
             if angle_args:
                 gid, pname = angle_args[0], angle_args[1]
             else:
-                gid = args[2]
-                pname = " ".join(args[3:])
+                # 角括号不足时从 args 取，但 smart_split 保留 <> 符号需要剥离
+                gid = args[2].lstrip("<").rstrip(">")
+                pname = " ".join(args[3:]).lstrip("<").rstrip(">")
+
+            # 校验群号为纯数字格式
+            if not gid.isdigit():
+                yield event.plain_result(f"群号格式不正确: {gid}\nQQ 群号应为纯数字，例如: /绑定路径 123456 项目A")
+                return
+
             result, msg = sm.bind_group(gid, pname)
             yield event.plain_result(msg)
 
@@ -200,7 +207,10 @@ class SyncCommandHandler:
                 yield event.plain_result("用法: /解绑路径 <群号>")
                 return
             angle_args = parse_angle_args(event.message_str, 1)
-            gid = angle_args[0] if angle_args else args[2]
+            if angle_args:
+                gid = angle_args[0]
+            else:
+                gid = args[2].lstrip("<").rstrip(">")
             result, msg = sm.unbind_group(gid)
             yield event.plain_result(msg)
 
