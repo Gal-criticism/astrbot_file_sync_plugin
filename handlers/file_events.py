@@ -3,6 +3,8 @@
 职责：监听群文件上传 → 命名检查 → 合规则即时同步到 NextCloud
 """
 
+import re
+
 from astrbot.api import logger
 
 
@@ -11,6 +13,21 @@ class FileEventHandler:
 
     def __init__(self, plugin):
         self._plugin = plugin
+
+    def _parse_cq_param(self, raw_message: str, key: str) -> str:
+        """从 CQ 码字符串中提取指定参数值
+
+        CQ 码格式: [CQ:type,key1=val1,key2=val2,...]
+        例如 _parse_cq_param("[CQ:file,file_id=abc,file_size=123]", "file_id") → "abc"
+        """
+        if not raw_message or not raw_message.startswith("[CQ:"):
+            return ""
+        # 匹配逗号或字符串开头后的 key=value（value 到下一个逗号或 ] 结束）
+        match = re.search(rf'(?:^|,){re.escape(key)}=([^,\]]*)', raw_message)
+        if match:
+            from urllib.parse import unquote
+            return unquote(match.group(1))
+        return ""
 
     @property
     def config(self):
@@ -92,16 +109,33 @@ class FileEventHandler:
         filename = getattr(file_component, 'name', None) or getattr(file_component, 'file', None)
         logger.info(f"从 File 组件提取: name={filename}, file_id={file_id}, size={file_size}")
 
-        if not filename:
-            raw = event.message_obj.raw_message
-            if raw and isinstance(raw, dict):
+        # raw_message 回退：AstrBot 的 File 组件只映射了 name/file，
+        # file_id/file_size 在反序列化时丢弃，需从 CQ 码或 dict 中提取
+        raw = event.message_obj.raw_message
+        if not filename and raw:
+            if isinstance(raw, dict):
                 file_data = raw.get('file', {})
                 if isinstance(file_data, dict):
                     filename = file_data.get('name')
                 if not filename:
                     filename = raw.get('filename')
-                if not file_id:
-                    file_id = file_data.get('id', '') if isinstance(file_data, dict) else ''
+
+        if not file_id and raw:
+            if isinstance(raw, dict):
+                file_data = raw.get('file', {})
+                if isinstance(file_data, dict):
+                    file_id = file_data.get('id', '')
+            elif isinstance(raw, str):
+                # CQ 码格式: [CQ:file,file=...,file_id=/uuid...,file_size=12345,url=...]
+                file_id = self._parse_cq_param(raw, "file_id")
+
+        if not file_size and raw and isinstance(raw, str):
+            size_str = self._parse_cq_param(raw, "file_size")
+            if size_str:
+                try:
+                    file_size = int(size_str)
+                except (ValueError, TypeError):
+                    pass
 
         if not filename:
             logger.warning("无法获取文件名，跳过检查")
@@ -143,9 +177,26 @@ class FileEventHandler:
         # ── 命名合规 → 即时同步到 NextCloud ──
         if not group_id:
             logger.warning("无法获取群号，跳过即时同步")
+            if self._plugin.state_manager:
+                self._plugin.state_manager.add_diagnostic_log("upload_fail",
+                    f"监听上传跳过: {filename}", {
+                        "file_name": filename,
+                        "reason": "missing_group_id",
+                        "sender_id": event.get_sender_id(),
+                        "sender_name": event.get_sender_name(),
+                    })
             return
         if not file_id:
             logger.warning("无法获取 file_id，跳过即时同步")
+            if self._plugin.state_manager:
+                self._plugin.state_manager.add_diagnostic_log("upload_fail",
+                    f"监听上传跳过: {filename}", {
+                        "file_name": filename,
+                        "reason": "missing_file_id",
+                        "group_id": group_id,
+                        "sender_id": event.get_sender_id(),
+                        "sender_name": event.get_sender_name(),
+                    })
             return
 
         logger.info(f"文件名合规，触发即时同步: {filename}")
