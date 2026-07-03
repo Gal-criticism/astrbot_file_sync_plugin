@@ -13,6 +13,9 @@ class SyncRecord:
     sync_time: datetime    # 同步时间
     file_hash: Optional[str] = None  # 文件hash(可选)
     retry_count: int = 0   # 重试次数
+    source: str = 'upload'  # 同步来源: upload/scheduled/manual
+    sender_id: str = ''     # 上传者QQ
+    sender_name: str = ''   # 上传者昵称
 
     def __post_init__(self):
         """数据验证"""
