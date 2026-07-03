@@ -546,7 +546,8 @@ class FileSyncPlugin(Star):
                 record = SyncRecord(
                     file_id=file_id, file_name=file_name, file_size=file_size,
                     group_id=group_id, target_path=target_path,
-                    sync_time=datetime.now(CN_TZ)
+                    sync_time=datetime.now(CN_TZ),
+                    source='scheduled',  # 标记为定时同步
                 )
                 self.state_manager.add_sync_record(record)
             else:
@@ -666,11 +667,40 @@ class FileSyncPlugin(Star):
             record = SyncRecord(
                 file_id=file_id, file_name=file_name, file_size=file_size,
                 group_id=group_id, target_path=target_path,
-                sync_time=datetime.now(CN_TZ)
+                sync_time=datetime.now(CN_TZ),
+                source='upload', sender_id=sender_id, sender_name=sender_name,
             )
             self.state_manager.add_sync_record(record)
+            # 诊断日志
+            self.state_manager.add_diagnostic_log("upload_success",
+                f"监听上传成功: {file_name}", {
+                    "file_name": file_name,
+                    "group_id": group_id,
+                    "target_path": target_path,
+                    "sender_id": sender_id,
+                    "sender_name": sender_name,
+                })
             logger.info(f"[UPLOAD_SYNC] 同步成功: {file_name} -> {target_path}")
         else:
+            # 诊断日志
+            self.state_manager.add_diagnostic_log("upload_fail",
+                f"监听上传失败: {file_name}", {
+                    "file_name": file_name,
+                    "file_id": file_id,
+                    "group_id": group_id,
+                    "target_path": target_path,
+                    "failed_stage": result.failed_stage,
+                    "failed_detail": result.failed_detail,
+                    "sender_id": sender_id,
+                    "sender_name": sender_name,
+                })
+            # 写入失败记录表
+            self.state_manager.add_upload_failure(
+                file_name=file_name, group_id=group_id,
+                failed_stage=result.failed_stage or "",
+                failed_detail=result.failed_detail or "",
+                sender_id=sender_id, sender_name=sender_name,
+            )
             logger.warning(f"[UPLOAD_SYNC] 同步失败: {file_name} - {result.failed_stage}: {result.failed_detail}")
 
         return result
