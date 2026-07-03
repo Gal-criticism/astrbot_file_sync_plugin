@@ -2,6 +2,8 @@
 
 from astrbot.api import logger
 
+from ..utils.command_parser import parse_angle_args, smart_split
+
 
 class SyncCommandHandler:
     """同步命令处理（/同步文件、/同步状态、/同步统计、/同步调试）"""
@@ -128,7 +130,7 @@ class SyncCommandHandler:
             yield event.plain_result("配置未初始化")
             return
 
-        args = event.message_str.strip().split()
+        args = smart_split(event.message_str)
         subcmd = args[1] if len(args) > 1 else "list"
         sm = self._plugin.state_manager
 
@@ -151,8 +153,12 @@ class SyncCommandHandler:
                 yield event.plain_result("用法: /预设路径 添加 <名称> <NextCloud路径>\n例如: /预设路径 添加 项目A /客户/项目A")
                 return
 
-            name = args[2]
-            path = args[3]
+            angle_args = parse_angle_args(event.message_str, 2)
+            if angle_args:
+                name, path = angle_args[0], angle_args[1]
+            else:
+                name = args[2]
+                path = " ".join(args[3:])
 
             path = "/" + path.lstrip("/")
 
@@ -169,7 +175,9 @@ class SyncCommandHandler:
             if len(args) < 3:
                 yield event.plain_result("用法: /预设路径 删除 <名称>")
                 return
-            result, msg = sm.delete_preset_path(args[2])
+            angle_args = parse_angle_args(event.message_str, 1)
+            name = angle_args[0] if angle_args else " ".join(args[2:])
+            result, msg = sm.delete_preset_path(name)
             yield event.plain_result(msg)
 
         # ── /绑定路径 ──
@@ -177,8 +185,12 @@ class SyncCommandHandler:
             if len(args) < 3:
                 yield event.plain_result("用法: /绑定路径 <群号> <路径名称>\n例如: /绑定路径 123456 项目A")
                 return
-            gid = args[2]
-            pname = args[3]
+            angle_args = parse_angle_args(event.message_str, 2)
+            if angle_args:
+                gid, pname = angle_args[0], angle_args[1]
+            else:
+                gid = args[2]
+                pname = " ".join(args[3:])
             result, msg = sm.bind_group(gid, pname)
             yield event.plain_result(msg)
 
@@ -187,7 +199,9 @@ class SyncCommandHandler:
             if len(args) < 3:
                 yield event.plain_result("用法: /解绑路径 <群号>")
                 return
-            result, msg = sm.unbind_group(args[2])
+            angle_args = parse_angle_args(event.message_str, 1)
+            gid = angle_args[0] if angle_args else args[2]
+            result, msg = sm.unbind_group(gid)
             yield event.plain_result(msg)
 
         # ── /绑定列表 ──
