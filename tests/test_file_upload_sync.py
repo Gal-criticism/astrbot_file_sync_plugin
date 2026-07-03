@@ -372,12 +372,12 @@ class TestDeprecatedNamingSync:
         )
 
         mock_plugin.sync_uploaded_file.return_value = MagicMock(
-            success=True, target_path="/QQ群文件/测试群_123456/素材/素材--文档.pdf"
+            success=True, target_path="/QQ群文件/测试群_123456/素材/素材--文档.jpg"
         )
 
         event = MockEvent(
             message_obj=MockMessageObj(
-                message=[MockFileComponent(name="素材--文档.pdf", id="file456", size=2048)]
+                message=[MockFileComponent(name="素材--文档.jpg", id="file456", size=2048)]
             ),
             sender_id="222222", sender_name="用户B", group_id="123456"
         )

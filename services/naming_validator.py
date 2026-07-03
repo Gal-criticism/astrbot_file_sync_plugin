@@ -6,7 +6,7 @@
 兼容旧格式（deprecated）：
     {分类}--{名称}
 
-六大标准分类：封面 / 成片 / 素材 / 音频 / 字幕 / 数据组测试
+七大标准分类：文案 / 封面 / 成片 / 素材 / 音频 / 字幕 / 数据组测试
 
 支持一次收集所有错误 + 推导修正建议。
 """
@@ -21,6 +21,9 @@ from ..models.naming_result import NamingResult
 
 # 分类关键词映射：子类型关键词 → 标准分类
 CATEGORY_KEYWORD_MAP: Dict[str, str] = {
+    # 文案/脚本
+    "文案": "文案",
+    "脚本": "文案",
     # 封面
     "封面": "封面",
     # 成片
@@ -38,23 +41,31 @@ CATEGORY_KEYWORD_MAP: Dict[str, str] = {
     "数据组测试": "数据组测试",
 }
 
-# 六大标准分类
-STANDARD_CATEGORIES = ["封面", "成片", "素材", "音频", "字幕", "数据组测试"]
+# 七大标准分类
+STANDARD_CATEGORIES = ["文案", "封面", "成片", "素材", "音频", "字幕", "数据组测试"]
 
-# 分类 → 允许的扩展名
+# 分类 → 允许的扩展名（不含工程文件的压缩包格式）
 CATEGORY_EXTENSIONS: Dict[str, List[str]] = {
+    "文案": ["docx", "pdf"],
     "封面": ["png", "jpg", "jpeg", "psd"],
-    "成片": ["mp4", "zip", "rar", "7z"],  # 成片也包括工程压缩包
-    "素材": ["png", "jpg", "jpeg", "psd", "mp4", "mov", "avi", "webm", "gif", "svg",
-             "ai", "eps", "cdr", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-             "zip", "rar", "7z", "txt"],
-    "音频": ["wav", "flac", "mp3", "aac", "ogg", "wma", "m4a", "zip", "rar", "7z"],  # 工程压缩包
-    "字幕": ["ass", "srt", "vtt", "ssa", "zip", "rar", "7z"],  # 字幕工程压缩包
+    "成片": ["mp4"],
+    "素材": ["png", "jpg", "jpeg", "psd", "gif", "svg",
+             "ai", "eps", "cdr",
+             "mp4", "mov", "avi", "webm"],
+    "音频": ["wav", "flac", "mp3", "aac"],
+    "字幕": ["ass"],
     "数据组测试": ["*"],
+}
+
+# 分类 → 工程文件允许的扩展名（仅成片、音频有独立工程子目录）
+ENGINEERING_EXTENSIONS: Dict[str, List[str]] = {
+    "成片": ["zip", "rar", "7z"],
+    "音频": ["zip", "rar", "7z"],
 }
 
 # 分类 → 云盘存储子目录名（一级分类目录）
 CATEGORY_SUBDIRS: Dict[str, str] = {
+    "文案": "文案",
     "封面": "封面",
     "成片": "成片",
     "素材": "素材",
@@ -103,6 +114,7 @@ class NamingValidator:
         """初始化验证器"""
         self._keyword_map = dict(CATEGORY_KEYWORD_MAP)
         self._extensions = _deep_copy_dict(CATEGORY_EXTENSIONS)
+        self._eng_extensions = dict(ENGINEERING_EXTENSIONS)
         self._subdirs = dict(CATEGORY_SUBDIRS)
 
         if extra_categories:
@@ -182,6 +194,8 @@ class NamingValidator:
 
         新规范目录层级：
         - 项目名称/
+          - 文案/
+          - 封面/
           - 成片/
             - 工程/      # 成片-工程或成片v1-工程后缀
           - 素材/
@@ -223,8 +237,15 @@ class NamingValidator:
         cats = list(self._subdirs.keys())
         return "、".join(cats)
 
-    def is_extension_allowed(self, category: str, extension: str) -> bool:
-        """检查扩展名是否属于该分类允许的范围"""
+    def is_extension_allowed(self, category: str, extension: str, is_engineering: bool = False) -> bool:
+        """检查扩展名是否属于该分类允许的范围
+
+        工程文件（is_engineering=True）使用 ENGINEERING_EXTENSIONS 校验，
+        普通文件使用 CATEGORY_EXTENSIONS 校验。
+        """
+        if is_engineering and category in ENGINEERING_EXTENSIONS:
+            allowed = ENGINEERING_EXTENSIONS[category]
+            return extension.lower() in [e.lstrip(".").lower() for e in allowed]
         if category not in self._extensions:
             return True
         allowed = self._extensions[category]
@@ -281,23 +302,35 @@ class NamingValidator:
         if category and cat_index < len(parts):
             suffixes = parts[cat_index + 1:]
 
-        # 扩展名校验
-        if extension and category and not self.is_extension_allowed(category, extension):
-            allowed = self._extensions.get(category, ["*"])
-            allowed_str = "、".join([f".{e}" for e in (allowed if "*" not in allowed else [])])
-            if "*" in allowed:
-                allowed_str = "无限制"
-            errors.append({
-                "type": "extension_mismatch",
-                "reason": f"分类「{category}」不支持 .{extension} 格式，允许：{allowed_str}"
-            })
+        _is_engineering = _has_engineering_suffix(suffixes)
+
+        # 扩展名校验（区分工程文件和普通文件）
+        if extension and category:
+            if _is_engineering and category in ENGINEERING_EXTENSIONS:
+                if not self.is_extension_allowed(category, extension, is_engineering=True):
+                    allowed = ENGINEERING_EXTENSIONS[category]
+                    allowed_str = "、".join([f".{e}" for e in allowed])
+                    errors.append({
+                        "type": "extension_mismatch",
+                        "reason": f"分类「{category}」的工程文件不支持 .{extension} 格式，工程文件允许：{allowed_str}"
+                    })
+            elif not _is_engineering:
+                if not self.is_extension_allowed(category, extension):
+                    allowed = self._extensions.get(category, ["*"])
+                    allowed_str = "、".join([f".{e}" for e in (allowed if "*" not in allowed else [])])
+                    if "*" in allowed:
+                        allowed_str = "无限制"
+                    errors.append({
+                        "type": "extension_mismatch",
+                        "reason": f"分类「{category}」不支持 .{extension} 格式，允许：{allowed_str}"
+                    })
 
         # 组装结果
         result = NamingResult(
             is_valid=len(errors) == 0 and category is not None,
             category=category, project_name=project_name,
             version=version, suffixes=suffixes, extension=extension,
-            is_engineering=_has_engineering_suffix(suffixes),
+            is_engineering=_is_engineering,
             **base_args,
         )
 

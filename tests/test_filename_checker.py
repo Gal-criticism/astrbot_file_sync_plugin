@@ -20,9 +20,9 @@ def checker_with_categories():
     )
 
 def test_validate_valid_filename_no_categories(checker_no_categories):
-    result = checker_no_categories.validate("素材--项目1.pdf")
+    result = checker_no_categories.validate("素材--项目1.png")
     assert result.is_valid is True
-    assert result.filename == "素材--项目1.pdf"
+    assert result.filename == "素材--项目1.png"
     assert result.category == "素材"
 
 def test_validate_missing_separator(checker_no_categories):
@@ -38,7 +38,7 @@ def test_validate_category_not_in_whitelist(checker_with_categories):
     assert "分类「其他」不在允许列表中" in result.error_reason
 
 def test_validate_category_in_whitelist(checker_with_categories):
-    result = checker_with_categories.validate("素材--项目1.pdf")
+    result = checker_with_categories.validate("素材--项目1.png")
     assert result.is_valid is True
     assert result.category == "素材"
 

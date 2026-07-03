@@ -12,7 +12,7 @@ def test_full_workflow_valid():
         template="{category}--{name}",
         categories={"设计类": ["素材", "成品"]}
     )
-    result = checker.validate("素材--项目1.pdf", "123", "用户", "群1")
+    result = checker.validate("素材--项目1.png", "123", "用户", "群1")
 
     assert result.is_valid is True
     assert result.category == "素材"
@@ -27,7 +27,7 @@ def test_full_workflow_invalid_format():
         template="{category}--{name}",
         categories={}
     )
-    result = checker.validate("素材项目1.pdf", "123", "用户", "群1")
+    result = checker.validate("素材项目1.png", "123", "用户", "群1")
 
     assert result.is_valid is False
     assert result.error_type == "format_error"
@@ -37,7 +37,7 @@ def test_full_workflow_invalid_format():
     message = notify.format_message(result)
 
     assert "@用户" in message
-    assert "素材项目1.pdf" in message
+    assert "素材项目1.png" in message
     assert "缺少分隔符" in message
 
 def test_full_workflow_invalid_category():
@@ -86,7 +86,7 @@ def test_multiple_separators():
         template="{category}--{name}",
         categories={}
     )
-    result = checker.validate("素材--子分类--项目1.pdf")
+    result = checker.validate("素材--子分类--项目1.png")
 
     assert result.is_valid is True
     assert result.category == "素材"
@@ -97,7 +97,7 @@ def test_whitespace_in_category():
         template="{category}--{name}",
         categories={"设计类": ["素材"]}
     )
-    result = checker.validate("  素材  --项目1.pdf")
+    result = checker.validate("  素材  --项目1.png")
 
     assert result.is_valid is True
     assert result.category == "素材"

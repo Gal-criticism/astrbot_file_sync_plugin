@@ -150,7 +150,7 @@ def test_mock_file_component():
 def test_extract_filename_from_file_component():
     """测试从 File 组件提取文件名"""
     msg_obj = MockMessageObj(
-        message=[MockFileComponent(name="素材--项目1.pdf")],
+        message=[MockFileComponent(name="素材--项目1.png")],
         raw_message=None
     )
     event = MockEvent(
@@ -246,7 +246,7 @@ def test_full_workflow_valid_filename():
     notify_service = NotifyService()
 
     msg_obj = MockMessageObj(
-        message=[MockFileComponent(name="素材--项目1.pdf")],
+        message=[MockFileComponent(name="素材--项目1.png")],
         raw_message=None
     )
     event = MockEvent(
@@ -261,7 +261,7 @@ def test_full_workflow_valid_filename():
     assert result is not None
     assert isinstance(result, dict)
     assert result["type"] == "valid"
-    assert result["filename"] == "素材--项目1.pdf"
+    assert result["filename"] == "素材--项目1.png"
     print("✅ 完整流程-合规文件测试通过")
 
 
