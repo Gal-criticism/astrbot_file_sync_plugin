@@ -208,14 +208,18 @@ class FileSyncConfig(BaseModel):
         return filename.rsplit(".", 1)[-1].lower()
 
     def generate_target_path(self, group_name: str, group_id: str, filename: str,
-                            category: Optional[str] = None,
-                            project_name: Optional[str] = None,
-                            preset_base: Optional[str] = None) -> str:
+                             category: Optional[str] = None,
+                             project_name: Optional[str] = None,
+                             preset_base: Optional[str] = None,
+                             naming_result: "NamingResult" = None) -> str:
         """根据模板生成目标路径
 
         优先使用预设路径（从 SQLite group_bindings 查询）：
         - 匹配到 → {预设路径}/{分类}[/工程]/{文件名}
         - 未匹配 → {base_path}/{group_name}_{group_id}/{项目名}/{分类}[/工程]/{文件名}
+
+        从 v2026-07-03 起支持 naming_result 参数。
+        调用方传入已解析的 NamingResult 后，方法内部不再重复解析文件名。
 
         目录分级：
         项目名称/
@@ -229,16 +233,22 @@ class FileSyncConfig(BaseModel):
         """
         from .services.naming_validator import NamingValidator
 
-        if category is None:
-            category = self._extract_category_from_filename(
-                filename, self.get_naming_extra_categories()
-            )
+        validator = NamingValidator(extra_categories=self.get_naming_extra_categories())
 
-        # 调用方已传 preset_base，则使用它
-        if category and preset_base:
-            preset_base = preset_base.rstrip("/")
-            validator = NamingValidator(extra_categories=self.get_naming_extra_categories())
+        # 优先使用调用方已解析的 naming_result
+        if naming_result is not None:
+            naming_info = naming_result
+        else:
+            # 回退：调用方未解析 → 兼容旧调用
+            if category is None:
+                category = self._extract_category_from_filename(
+                    filename, self.get_naming_extra_categories()
+                )
             naming_info = validator.parse(filename)
+
+        # 有预设路径 → 用预设 + 分类子目录
+        if preset_base:
+            preset_base = preset_base.rstrip("/")
             subdir = validator.get_target_subdir(naming_info)
             parts = subdir.split("/", 1)
             inner = parts[1] if len(parts) > 1 else ""
@@ -247,10 +257,8 @@ class FileSyncConfig(BaseModel):
             else:
                 return f"{preset_base}/{filename}"
 
-        # 回退：使用 base_path + group 格式
-        if category:
-            validator = NamingValidator(extra_categories=self.get_naming_extra_categories())
-            naming_info = validator.parse(filename)
+        # 无预设路径 → 回退到 base_path + group 格式
+        if naming_info.category:
             subdir = validator.get_target_subdir(naming_info)
             path = f"{group_name}_{group_id}/{subdir}"
         else:
