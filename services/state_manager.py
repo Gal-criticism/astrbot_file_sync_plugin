@@ -39,7 +39,10 @@ class StateManager:
                 target_path TEXT NOT NULL,
                 sync_time TEXT NOT NULL,
                 file_hash TEXT,
-                retry_count INTEGER DEFAULT 0
+                retry_count INTEGER DEFAULT 0,
+                source TEXT DEFAULT 'upload',
+                sender_id TEXT DEFAULT '',
+                sender_name TEXT DEFAULT ''
             )
         """)
         conn.execute("""
@@ -79,6 +82,25 @@ class StateManager:
                 FOREIGN KEY (path_id) REFERENCES preset_paths(id)
             )
         """)
+        # 监听上传失败记录表
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS upload_failures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_name TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                failed_stage TEXT,
+                failed_detail TEXT,
+                sender_id TEXT DEFAULT '',
+                sender_name TEXT DEFAULT '',
+                fail_time TEXT NOT NULL
+            )
+        """)
+        # 兼容旧数据库：新增列（已存在则忽略）
+        for col in ["source", "sender_id", "sender_name"]:
+            try:
+                conn.execute(f"ALTER TABLE sync_records ADD COLUMN {col} TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass  # 列已存在
         conn.commit()
 
     def is_synced(self, file_id: str) -> bool:
@@ -105,14 +127,132 @@ class StateManager:
         conn = self._get_conn()
         conn.execute("""
             INSERT OR REPLACE INTO sync_records
-            (file_id, file_name, file_size, group_id, target_path, sync_time, file_hash, retry_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (file_id, file_name, file_size, group_id, target_path,
+             sync_time, file_hash, retry_count, source, sender_id, sender_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             record.file_id, record.file_name, record.file_size,
             record.group_id, record.target_path,
-            record.sync_time.isoformat(), record.file_hash, record.retry_count
+            record.sync_time.isoformat(), record.file_hash, record.retry_count,
+            record.source, record.sender_id, record.sender_name
         ))
         conn.commit()
+
+    def add_upload_failure(self, file_name: str, group_id: str,
+                           failed_stage: str = "", failed_detail: str = "",
+                           sender_id: str = "", sender_name: str = ""):
+        """记录监听上传失败"""
+        conn = self._get_conn()
+        conn.execute("""
+            INSERT INTO upload_failures
+            (file_name, group_id, failed_stage, failed_detail,
+             sender_id, sender_name, fail_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (file_name, group_id, failed_stage, failed_detail,
+              sender_id, sender_name, datetime.now(CN_TZ).isoformat()))
+        conn.commit()
+
+    def get_upload_stats_by_group(self, group_id: str = None) -> list:
+        """获取监听上传统计，按群分组
+
+        Args:
+            group_id: 指定群号时只返回该群统计；None 时返回所有群
+
+        Returns:
+            list of dict: [
+                {
+                    "group_id": str,
+                    "success_count": int,
+                    "fail_count": int,
+                    "last_upload_time": str or None,
+                    "recent_records": [  # 最近 10 条，按时间倒序
+                        {
+                            "file_name": str,
+                            "sender_name": str,
+                            "status": "success" / "failed",
+                            "time": str,
+                            "detail": str,  # 失败时为 failed_stage/failed_detail
+                        }
+                    ]
+                }
+            ]
+        """
+        conn = self._get_conn()
+        results = []
+
+        # 收集群号
+        if group_id:
+            group_ids = [group_id]
+        else:
+            cursor = conn.execute(
+                "SELECT DISTINCT group_id FROM sync_records WHERE source='upload' "
+                "UNION SELECT DISTINCT group_id FROM upload_failures"
+            )
+            group_ids = [row[0] for row in cursor.fetchall()]
+            if not group_ids:
+                return []
+
+        for gid in group_ids:
+            # 成功数
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM sync_records WHERE group_id=? AND source='upload'",
+                (gid,)
+            )
+            success_count = cursor.fetchone()[0]
+
+            # 失败数
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM upload_failures WHERE group_id=?",
+                (gid,)
+            )
+            fail_count = cursor.fetchone()[0]
+
+            # 最后上传时间（从 sync_records）
+            cursor = conn.execute(
+                "SELECT sync_time FROM sync_records WHERE group_id=? AND source='upload' "
+                "ORDER BY sync_time DESC LIMIT 1",
+                (gid,)
+            )
+            row = cursor.fetchone()
+            last_upload_time = row[0] if row else None
+
+            # 最近 10 条记录（合并成功的和失败的，按时间倒序）
+            cursor = conn.execute(
+                "SELECT file_name, sender_name, sync_time, source FROM sync_records "
+                "WHERE group_id=? AND source='upload' ORDER BY sync_time DESC LIMIT 10",
+                (gid,)
+            )
+            recent = [
+                {"file_name": r[0], "sender_name": r[1] or "", "status": "success",
+                 "time": r[2], "detail": ""}
+                for r in cursor.fetchall()
+            ]
+
+            # 失败的
+            cursor = conn.execute(
+                "SELECT file_name, sender_name, fail_time, failed_stage, failed_detail "
+                "FROM upload_failures WHERE group_id=? ORDER BY fail_time DESC LIMIT 10",
+                (gid,)
+            )
+            recent_fails = [
+                {"file_name": r[0], "sender_name": r[1] or "", "status": "failed",
+                 "time": r[2], "detail": f"{r[3]}: {r[4]}" if r[3] else r[4]}
+                for r in cursor.fetchall()
+            ]
+
+            # 合并排序取前 10
+            combined = sorted(recent + recent_fails,
+                              key=lambda x: x["time"], reverse=True)[:10]
+
+            results.append({
+                "group_id": gid,
+                "success_count": success_count,
+                "fail_count": fail_count,
+                "last_upload_time": last_upload_time,
+                "recent_records": combined,
+            })
+
+        return results
 
     def add_to_retry_queue(self, file_id: str, file_name: str, file_size: int,
                           group_id: str, target_path: str, delay_seconds: int = 300):
