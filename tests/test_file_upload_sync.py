@@ -399,7 +399,7 @@ class TestMissingFileId:
 
     @pytest.mark.asyncio
     async def test_no_file_id_skips_sync(self, handler, mock_plugin):
-        """file_id 为空时跳过即时同步"""
+        """file_id 完全缺失时跳过即时同步"""
         mock_plugin.naming_validator.validate.return_value = make_result(is_valid=True)
 
         event = MockEvent(
@@ -414,6 +414,63 @@ class TestMissingFileId:
             results.append(r)
 
         # 验证同步未被触发
+        mock_plugin.sync_uploaded_file.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_file_id_from_raw_message_fallback(self, handler, mock_plugin):
+        """File 组件中 file_id 为空（AstrBot 反序列化后丢失），
+        但 raw_message CQ 码中有 file_id/file_size → 应回退提取"""
+        mock_plugin.naming_validator.validate.return_value = make_result(is_valid=True)
+
+        mock_plugin.sync_uploaded_file.return_value = MagicMock(
+            success=True, target_path="/QQ群文件/测试群_123456/项目A/音频/LimeLight Lemonade Jam (Test)-音频-柚子粗剪_516.mp3"
+        )
+
+        # 模拟真实场景：AstrBot File 组件只有 name（无 id/file_id），
+        # raw_message 是 CQ 码字符串，内含 file_id / file_size
+        cq_raw = "[CQ:file,file=LimeLight Lemonade Jam (Test)-音频-柚子粗剪_516.mp3,file_id=/16cad4aa-20f4-4efc-97d6-6ba96fcefcd3,file_size=14547597,url=https://example.com/download]"
+        event = MockEvent(
+            message_obj=MockMessageObj(
+                message=[MockFileComponent(name="LimeLight Lemonade Jam (Test)-音频-柚子粗剪_516.mp3")],
+                raw_message=cq_raw
+            ),
+            sender_id="111111", sender_name="用户A", group_id="123456"
+        )
+
+        results = []
+        async for r in handler.handle_file_upload(event):
+            results.append(r)
+
+        # 验证 sync_uploaded_file 被调用，file_id 和 file_size 来自 CQ 码
+        mock_plugin.sync_uploaded_file.assert_awaited_once()
+        call_kwargs = mock_plugin.sync_uploaded_file.call_args[1]
+        expected_file_id = "/16cad4aa-20f4-4efc-97d6-6ba96fcefcd3"
+        assert call_kwargs["file_id"] == expected_file_id, (
+            f"file_id 应为 CQ 码中的 '{expected_file_id}'，实际为 '{call_kwargs['file_id']}'"
+        )
+        assert call_kwargs["file_name"] == "LimeLight Lemonade Jam (Test)-音频-柚子粗剪_516.mp3"
+        assert call_kwargs["file_size"] == 14547597, (
+            f"file_size 应为 14547597，实际为 {call_kwargs['file_size']}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cq_raw_message_without_file_id(self, handler, mock_plugin):
+        """CQ 码中没有 file_id → 仍然跳过即时同步"""
+        mock_plugin.naming_validator.validate.return_value = make_result(is_valid=True)
+
+        cq_raw = "[CQ:file,file=test.mp3,file_size=12345]"
+        event = MockEvent(
+            message_obj=MockMessageObj(
+                message=[MockFileComponent(name="test.mp3")],
+                raw_message=cq_raw
+            ),
+            sender_id="111111", sender_name="用户A", group_id="123456"
+        )
+
+        results = []
+        async for r in handler.handle_file_upload(event):
+            results.append(r)
+
         mock_plugin.sync_uploaded_file.assert_not_awaited()
 
 
