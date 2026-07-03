@@ -125,17 +125,31 @@ class FileEventHandler:
                 file_data = raw.get('file', {})
                 if isinstance(file_data, dict):
                     file_id = file_data.get('id', '')
+                # 兜底：raw_message 可能是整个 OneBot Event 字典
+                # raw_message 字段内是 CQ 码字符串
+                if not file_id:
+                    cq_raw = raw.get('raw_message', '')
+                    if isinstance(cq_raw, str):
+                        file_id = self._parse_cq_param(cq_raw, "file_id")
             elif isinstance(raw, str):
                 # CQ 码格式: [CQ:file,file=...,file_id=/uuid...,file_size=12345,url=...]
                 file_id = self._parse_cq_param(raw, "file_id")
 
-        if not file_size and raw and isinstance(raw, str):
-            size_str = self._parse_cq_param(raw, "file_size")
-            if size_str:
-                try:
-                    file_size = int(size_str)
-                except (ValueError, TypeError):
-                    pass
+        if not file_size and raw:
+            cq_src = ""
+            if isinstance(raw, str):
+                cq_src = raw
+            elif isinstance(raw, dict):
+                cq_candidate = raw.get('raw_message', '')
+                if isinstance(cq_candidate, str):
+                    cq_src = cq_candidate
+            if cq_src:
+                size_str = self._parse_cq_param(cq_src, "file_size")
+                if size_str:
+                    try:
+                        file_size = int(size_str)
+                    except (ValueError, TypeError):
+                        pass
 
         if not filename:
             logger.warning("无法获取文件名，跳过检查")

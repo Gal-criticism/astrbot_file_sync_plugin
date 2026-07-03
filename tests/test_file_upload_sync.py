@@ -419,20 +419,25 @@ class TestMissingFileId:
     @pytest.mark.asyncio
     async def test_file_id_from_raw_message_fallback(self, handler, mock_plugin):
         """File 组件中 file_id 为空（AstrBot 反序列化后丢失），
-        但 raw_message CQ 码中有 file_id/file_size → 应回退提取"""
+        且 raw_message 是完整 Event dict，内部 raw_message 字段含 CQ 码 → 应回退提取"""
         mock_plugin.naming_validator.validate.return_value = make_result(is_valid=True)
 
         mock_plugin.sync_uploaded_file.return_value = MagicMock(
             success=True, target_path="/QQ群文件/测试群_123456/项目A/音频/LimeLight Lemonade Jam (Test)-音频-柚子粗剪_516.mp3"
         )
 
-        # 模拟真实场景：AstrBot File 组件只有 name（无 id/file_id），
-        # raw_message 是 CQ 码字符串，内含 file_id / file_size
-        cq_raw = "[CQ:file,file=LimeLight Lemonade Jam (Test)-音频-柚子粗剪_516.mp3,file_id=/16cad4aa-20f4-4efc-97d6-6ba96fcefcd3,file_size=14547597,url=https://example.com/download]"
+        # 模拟真实场景：AstrBot 中 raw_message 是整个 OneBot Event dict，
+        # Event['raw_message'] 是 CQ 码字符串，内含 file_id / file_size
+        event_raw = {
+            "self_id": 2661244897,
+            "raw_message": "[CQ:file,file=LimeLight Lemonade Jam (Test)-音频-柚子粗剪_516.mp3,file_id=/16cad4aa-20f4-4efc-97d6-6ba96fcefcd3,file_size=14547597,url=https://example.com/download]",
+            "group_id": 650663256,
+            "group_name": "素材整理",
+        }
         event = MockEvent(
             message_obj=MockMessageObj(
                 message=[MockFileComponent(name="LimeLight Lemonade Jam (Test)-音频-柚子粗剪_516.mp3")],
-                raw_message=cq_raw
+                raw_message=event_raw
             ),
             sender_id="111111", sender_name="用户A", group_id="123456"
         )
@@ -458,11 +463,13 @@ class TestMissingFileId:
         """CQ 码中没有 file_id → 仍然跳过即时同步"""
         mock_plugin.naming_validator.validate.return_value = make_result(is_valid=True)
 
-        cq_raw = "[CQ:file,file=test.mp3,file_size=12345]"
+        event_raw = {
+            "raw_message": "[CQ:file,file=test.mp3,file_size=12345]",
+        }
         event = MockEvent(
             message_obj=MockMessageObj(
                 message=[MockFileComponent(name="test.mp3")],
-                raw_message=cq_raw
+                raw_message=event_raw
             ),
             sender_id="111111", sender_name="用户A", group_id="123456"
         )
