@@ -534,7 +534,8 @@ class FileSyncPlugin(Star):
             # 生成目标路径（优先从 SQLite 获取群绑定的预设路径）
             preset_base = self.state_manager.get_group_binding(group_id)
             target_path = self.config.generate_target_path(
-                group_name, group_id, file_name, category, project_name, preset_base
+                group_name, group_id, file_name, category, project_name, preset_base,
+                naming_result=naming_result,
             )
             result = await self._sync_single_file(
                 group_id, target_path, file_id, file_name, file_size
@@ -648,7 +649,8 @@ class FileSyncPlugin(Star):
                 project_name = parsed.project_name
                 category = parsed.category or category
         target_path = self.config.generate_target_path(
-            group_name, group_id, file_name, category, project_name, preset_base
+            group_name, group_id, file_name, category, project_name, preset_base,
+            naming_result=parsed,
         )
 
         # 执行同步（下载 → 上传）
