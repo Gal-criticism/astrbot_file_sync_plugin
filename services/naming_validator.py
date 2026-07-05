@@ -176,6 +176,21 @@ class NamingValidator:
             result.add_error("format_error",
                              "缺少分隔符，请使用格式：项目名称-分类v版本号-后缀.扩展名")
 
+            # ── 素材兜底: 无分隔符无法分类，但扩展名是图片/视频 → 自动归入素材 ──
+            if extension:
+                material_extensions = self._extensions.get("素材", [])
+                ext_lower = extension.lower()
+                if ext_lower in [e.lower() for e in material_extensions] or "*" in material_extensions:
+                    result = NamingResult(
+                        is_valid=True,
+                        category="素材",
+                        project_name=stem,
+                        extension=extension,
+                        **base_args,
+                    )
+                    result.suggested_fix = None
+                    return result
+
         # 4. 生成修正建议
         result.suggested_fix = self._generate_fix_suggestion(result)
         return result

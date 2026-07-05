@@ -21,7 +21,7 @@ def test_full_workflow_valid():
     assert result.error_reason is None
 
 def test_full_workflow_invalid_format():
-    """完整流程：格式错误 - 发送@提醒"""
+    """完整流程：无分隔符的图片自动归入素材"""
     # 1. 检查文件名
     checker = FilenameChecker(
         template="{category}--{name}",
@@ -29,16 +29,8 @@ def test_full_workflow_invalid_format():
     )
     result = checker.validate("素材项目1.png", "123", "用户", "群1")
 
-    assert result.is_valid is False
-    assert result.error_type == "format_error"
-
-    # 2. 发送通知
-    notify = NotifyService()
-    message = notify.format_message(result)
-
-    assert "@用户" in message
-    assert "素材项目1.png" in message
-    assert "缺少分隔符" in message
+    assert result.is_valid is True
+    assert result.category == "素材"
 
 def test_full_workflow_invalid_category():
     """完整流程：分类不在白名单 - 发送@提醒"""

@@ -7,14 +7,15 @@ class NotifyService:
     """通知服务 - 发送@提醒消息"""
 
     DEFAULT_TEMPLATE = (
-        "@{sender} 你上传的文件「{filename}」格式不规范\n"
-        "原因：{error_reason}\n"
-        "正确格式：项目名称-分类v版本号-后缀.扩展名\n"
-        "可用分类：{categories}"
+        "@{sender} 你上传的文件「{filename}」格式问题\n"
+        "问题：{error_reason}\n"
+        "正确格式：项目名称-分类v1.扩展名\n"
+        "可用分类：{categories}\n"
+        "💡 图片/视频文件即使不命名分类，也会自动归入「素材」文件夹"
     )
 
     DEPRECATED_HINT = (
-        "\n⚠️ 你使用了旧格式「分类--名称」，请尽快迁移到新格式「项目名称-分类v版本号」"
+        "\n⚠️ 你使用了旧格式「分类--名称」，建议改为：项目名称-分类v1.扩展名"
     )
 
     def __init__(self, template: Optional[str] = None):
@@ -93,9 +94,8 @@ class NotifyService:
 
             # ── 情况1: 不合规 → 完整错误信息 ──
             if not is_valid:
-                chain.append(Comp.Plain(text=f"你上传的文件「{filename}」格式不规范"))
+                chain.append(Comp.Plain(text=f"你上传的文件「{filename}」格式问题"))
 
-                # 多错误逐条列出
                 errors = getattr(result, 'errors', []) or []
                 if errors:
                     chain.append(Comp.Plain(text="问题："))
@@ -103,17 +103,19 @@ class NotifyService:
                         chain.append(Comp.Plain(text=f"  · {e.get('reason', '')}"))
                 else:
                     error_reason = getattr(result, 'error_reason', '') or ''
-                    chain.append(Comp.Plain(text=f"原因：{error_reason}"))
+                    chain.append(Comp.Plain(text=f"问题：{error_reason}"))
 
-                chain.append(Comp.Plain(text="正确格式：项目名称-分类v版本号-后缀.扩展名"))
+                chain.append(Comp.Plain(text="正确格式：项目名称-分类v1.扩展名"))
                 chain.append(Comp.Plain(text=f"可用分类：{categories}"))
 
                 if suggested_fix:
                     chain.append(Comp.Plain(text=suggested_fix))
 
+                chain.append(Comp.Plain(text="💡 图片/视频文件即使不命名分类，也会自动归入「素材」文件夹"))
+
                 if deprecated:
                     chain.append(Comp.Plain(
-                        text="⚠️ 你使用了旧格式「分类--名称」，请尽快迁移到新格式"
+                        text="⚠️ 你使用了旧格式「分类--名称」，建议改为：项目名称-分类v1.扩展名"
                     ))
             else:
                 # ── 情况2: 合规但旧格式 → 温和提醒 ──
@@ -122,7 +124,7 @@ class NotifyService:
                         text=f"你上传的文件「{filename}」使用了旧格式「分类--名称」"
                     ))
                     chain.append(Comp.Plain(
-                        text="⚠️ 该格式仍被接受，但建议迁移到新格式：项目名称-分类v版本号-后缀"
+                        text="⚠️ 该格式仍被接受，建议改为：项目名称-分类v1.扩展名"
                     ))
                     if suggested_fix:
                         chain.append(Comp.Plain(text=suggested_fix))
