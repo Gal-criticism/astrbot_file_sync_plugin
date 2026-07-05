@@ -52,7 +52,7 @@ QQ群文件自动同步到NextCloud私有云盘的AstrBot插件。
 | `retry_max_attempts` | 最大重试次数 | `3` |
 | `retry_delay_seconds` | 重试间隔（秒） | `300` |
 | `filename_check_enabled` | 启用上传时文件名检查 | `false` |
-| `filename_check_enabled` | 文件名模板 | `{project_name}-{category}v{version}-{suffix}.{ext}` |
+| `filename_template` | 文件名模板 | `{project_name}-{category}v{version}-{suffix}.{ext}` |
 | `naming_extra_categories` | 自定义扩展分类（JSON格式） | `{}` |
 | `filename_notify_template` | @提醒自定义模板 | — |
 | `startup_presets` | 预设路径映射 {名称: 路径}，启动时自动种子化到 SQLite | `{}` |
@@ -106,6 +106,18 @@ file_sync_plugin2/
 ├── tests/             # 测试
 └── docs/              # 文档
 ```
+
+## 支持的云盘
+
+该插件通过 **WebDAV 协议**（PROPFIND/MKCOL/PUT）与云盘通信，核心适配 **NextCloud** 私有云盘。
+
+| 云盘 | 支持情况 | 说明 |
+|------|---------|------|
+| **NextCloud** | ✅ 完整支持（主目标） | 使用 WebDAV API，已验证稳定运行 |
+| **ownCloud** | ✅ 兼容 | 同样使用 WebDAV 协议，连接配置与 NextCloud 一致 |
+| **标准 WebDAV 服务器** | ⚠️ 理论兼容 | 支持 PROPFIND/MKCOL/PUT 的通用 WebDAV 服务均可，未经过充分测试 |
+
+> 如需使用其他 WebDAV 服务，确保提供正确的 `nextcloud_url` 指向该服务的 WebDAV 根地址。部分服务需要特定的 URL 格式（如 NextCloud 需拼接 `/remote.php/dav/files/{username}`）。
 
 ## 安装
 
