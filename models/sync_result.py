@@ -35,6 +35,10 @@ class SyncResult:
     failed_detail: Optional[str] = None
     # 如 HTTP 状态码、异常类型、错误消息等
 
+    # ── 查重 ──
+    already_synced: bool = False
+    # True → 查重命中，跳过下载/上传，非错误
+
     # ── 命名规范分析 ──
     naming_category: Optional[str] = None      # 识别的分类
     naming_project: Optional[str] = None       # 项目名称
@@ -57,4 +61,5 @@ class SyncResult:
             "version": self.naming_version,
             "naming_valid": self.naming_is_valid,
             "naming_error": self.naming_error,
+            "already_synced": self.already_synced,
         }

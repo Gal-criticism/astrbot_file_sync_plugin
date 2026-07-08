@@ -234,8 +234,13 @@ class FileEventHandler:
 
         target_path_prefix = sync_result.target_path.rsplit("/", 1)[0] if sync_result.target_path else ""
 
-        if sync_result.success:
+        if sync_result.already_synced:
+            # 查重命中，文件已存在，静默跳过（不发送重复通知打扰用户）
+            logger.info(f"即时同步跳过(已存在): {filename}")
+            return
+        elif sync_result.success:
             # 成功通知始终发送，notify_on_success 控制是否 @用户
+            logger.info(f"[NOTIFY_DEBUG] notify_on_success={self.config.notify_on_success} (type={type(self.config.notify_on_success).__name__})")
             chain = [Comp.Plain(text=f"文件「{filename}」已同步到网盘 ✓"),
                      Comp.Plain(text=f"路径：{target_path_prefix}/")]
             if self.config.notify_on_success:
@@ -244,6 +249,7 @@ class FileEventHandler:
             logger.info(f"即时同步成功: {filename}")
         else:
             # 失败通知始终发送，notify_on_error 控制是否 @用户
+            logger.info(f"[NOTIFY_DEBUG] notify_on_error={self.config.notify_on_error} (type={type(self.config.notify_on_error).__name__})")
             chain = [Comp.Plain(text=f"文件「{filename}」同步失败: {sync_result.failed_detail or sync_result.failed_stage}")]
             if self.config.notify_on_error:
                 chain.insert(0, Comp.At(qq=event.get_sender_id()))

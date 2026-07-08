@@ -652,6 +652,24 @@ class FileSyncPlugin(Star):
         """
         logger.info(f"[UPLOAD_SYNC] 上传触发同步: {file_name}")
 
+        # ── 查重：与 sync_group 保持一致的过滤逻辑 ──
+        # 1. file_id 精确匹配
+        if file_id and self.state_manager and self.state_manager.is_synced(file_id):
+            logger.info(f"[UPLOAD_SYNC] 跳过重复文件(file_id): {file_name}")
+            return SyncResult(
+                success=True, file_name=file_name, file_id=file_id,
+                file_size=file_size, group_id=group_id, target_path="",
+                already_synced=True,
+            )
+        # 2. 文件名+大小+群号去重
+        if file_size > 0 and self.state_manager and self.state_manager.is_synced_by_name_size(file_name, file_size, group_id):
+            logger.info(f"[UPLOAD_SYNC] 跳过重复文件(name+size): {file_name}")
+            return SyncResult(
+                success=True, file_name=file_name, file_id=file_id,
+                file_size=file_size, group_id=group_id, target_path="",
+                already_synced=True,
+            )
+
         # 获取群信息（用于回退路径生成）
         group_name, _ = await self.get_group_info(group_id)
 
@@ -671,6 +689,17 @@ class FileSyncPlugin(Star):
             group_name, group_id, file_name, category, project_name, preset_base,
             naming_result=parsed,
         )
+
+        # 3. 远程文件存在性检查（兜底：处理 file_id/size 均为空的场景）
+        if self.cloud_sync:
+            remote_file_path = f"{target_path}/{file_name}"
+            if self.cloud_sync.file_exists(remote_file_path):
+                logger.info(f"[UPLOAD_SYNC] 跳过重复文件(远程已存在): {file_name} -> {remote_file_path}")
+                return SyncResult(
+                    success=True, file_name=file_name, file_id=file_id,
+                    file_size=file_size, group_id=group_id, target_path=target_path,
+                    already_synced=True,
+                )
 
         # 执行同步（下载 → 上传）
         result = await self._sync_single_file(
