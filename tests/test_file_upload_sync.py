@@ -498,39 +498,47 @@ class TestPresetPath:
         )
 
         test_cases = [
-            # (filename, category, project_name, preset_base, expected_contains)
+            # (filename, category, project_name, preset_base, expected_in_path, expected_tail)
+            # generate_target_path 返回目录路径，不含文件名（sync_executor 负责追加）
             ("我的评测-成片v1.mp4", "成片", "我的评测",
              "/Galgame批评主文件夹/02_原创内容/a_游戏评测",
-             "/Galgame批评主文件夹/02_原创内容/a_游戏评测/成片"),
+             "/Galgame批评主文件夹/02_原创内容/a_游戏评测/成片",
+             "成片"),
             ("我的评测-成片v1-工程-PR2022.zip", "成片", "我的评测",
              "/Galgame批评主文件夹/02_原创内容/a_游戏评测",
+             "/Galgame批评主文件夹/02_原创内容/a_游戏评测/成片/工程",
              "工程"),  # 工程子目录
             ("游戏推荐-成片v1.mp4", "成片", "游戏推荐",
              "/Galgame批评主文件夹/02_原创内容/b_游戏推荐、科普、前瞻等",
-             "/b_游戏推荐"),
+             "/Galgame批评主文件夹/02_原创内容/b_游戏推荐、科普、前瞻等/成片",
+             "成片"),
             ("十大汉化-素材-参考图.png", "素材", "十大汉化",
              "/Galgame批评主文件夹/02_原创内容/c_十大汉化",
-             "/c_十大汉化/素材"),
+             "/Galgame批评主文件夹/02_原创内容/c_十大汉化/素材",
+             "素材"),
             ("方桌锐评-素材-参考图.png", "素材", "方桌锐评",
              "/Galgame批评主文件夹/02_原创内容/e_方桌锐评",
-             "/e_方桌锐评/素材"),
+             "/Galgame批评主文件夹/02_原创内容/e_方桌锐评/素材",
+             "素材"),
             ("我的评测-录音v1.wav", "音频", "我的评测",
              "/Galgame批评主文件夹/02_原创内容/a_游戏评测",
-             "/a_游戏评测/音频"),
+             "/Galgame批评主文件夹/02_原创内容/a_游戏评测/音频",
+             "音频"),
             ("我的评测-字幕v1.ass", "字幕", "我的评测",
              "/Galgame批评主文件夹/02_原创内容/a_游戏评测",
-             "/a_游戏评测/字幕"),
+             "/Galgame批评主文件夹/02_原创内容/a_游戏评测/字幕",
+             "字幕"),
         ]
 
-        for filename, category, project_name, preset_base, expected in test_cases:
+        for filename, category, project_name, preset_base, expected_path, expected_tail in test_cases:
             path = config.generate_target_path(
                 "测试群", "123456", filename,
                 category=category, project_name=project_name,
                 preset_base=preset_base,
             )
-            assert expected in path, f"路径 {path} 应包含 {expected}"
-            # 文件名应该在末尾
-            assert path.endswith(filename), f"路径应以 {filename} 结尾，实际: {path}"
+            # generate_target_path 返回目录路径，不含文件名
+            assert path == expected_path, f"路径应为 {expected_path}，实际: {path}"
+            assert path.endswith(expected_tail), f"路径应以 {expected_tail} 结尾，实际: {path}"
 
     def test_generate_target_path_without_preset(self):
         """无预设路径时回退到 base_path 格式"""
@@ -566,8 +574,8 @@ class TestPresetPath:
             category="成片", project_name="我的评测",
             preset_base="/Galgame批评主文件夹/02_原创内容/a_游戏评测",
         )
-        assert "/a_游戏评测/成片/工程/" in path
-        assert path.endswith("我的评测-成片v1-工程-PR2022.zip")
+        # generate_target_path 返回目录路径，不含文件名
+        assert path == "/Galgame批评主文件夹/02_原创内容/a_游戏评测/成片/工程"
 
     def test_generate_target_path_no_category(self):
         """无分类时回退到 path_template"""

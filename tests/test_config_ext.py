@@ -228,7 +228,8 @@ def test_generate_target_path_preset_with_category():
     )
     assert "/客户/项目A" in path
     assert "成片" in path
-    assert "项目A-成片v1.mp4" in path
+    # generate_target_path 返回目录路径，不含文件名（sync_executor 负责追加文件名）
+    assert path == "/客户/项目A/成片"
 
 
 def test_generate_target_path_preset_no_category():
@@ -240,7 +241,8 @@ def test_generate_target_path_preset_no_category():
         preset_base="/客户/项目A",
     )
     assert "/客户/项目A" in path, f"应使用预设路径，实际: {path}"
-    assert path.endswith("no_category_file.txt"), f"文件名应在末尾，实际: {path}"
+    # generate_target_path 返回目录路径，不含文件名
+    assert path == "/客户/项目A", f"应直接返回 preset 路径，实际: {path}"
 
 
 def test_generate_target_path_with_naming_result():
@@ -259,7 +261,8 @@ def test_generate_target_path_with_naming_result():
     )
     assert "/客户/项目A" in path
     assert "成片" in path
-    assert "项目A-成片v1.mp4" in path
+    # generate_target_path 返回目录路径，不含文件名
+    assert path == "/客户/项目A/成片"
 
     # 无 preset_base, 但有 naming_result → 走 base_path 回退
     path2 = cfg.generate_target_path(

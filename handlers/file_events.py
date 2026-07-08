@@ -258,9 +258,11 @@ class FileEventHandler:
             except ImportError:
                 return
 
-            yield event.chain_result([
-                Comp.At(qq=event.get_sender_id()),
+            chain = [
                 Comp.Plain(text=f"你上传的文件「{filename}」使用了旧格式「分类--名称」"),
                 Comp.Plain(text="⚠️ 该格式仍被接受，但建议迁移到新格式：项目名称-分类v版本号-后缀"),
-            ])
+            ]
+            if self.config.notify_on_success:
+                chain.insert(0, Comp.At(qq=event.get_sender_id()))
+            yield event.chain_result(chain)
             logger.info("旧格式温和提醒已发送")

@@ -255,9 +255,9 @@ class FileSyncConfig(BaseModel):
             parts = subdir.split("/", 1)
             inner = parts[1] if len(parts) > 1 else ""
             if inner:
-                return f"{preset_base}/{inner}/{filename}"
+                return f"{preset_base}/{inner}"
             else:
-                return f"{preset_base}/{filename}"
+                return f"{preset_base}"
 
         # 无预设路径 → 回退到 base_path + group 格式
         if naming_info.category:
