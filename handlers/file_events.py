@@ -235,17 +235,19 @@ class FileEventHandler:
         target_path_prefix = sync_result.target_path.rsplit("/", 1)[0] if sync_result.target_path else ""
 
         if sync_result.success:
-            yield event.chain_result([
-                Comp.At(qq=event.get_sender_id()),
-                Comp.Plain(text=f"文件「{filename}」已同步到网盘 ✓"),
-                Comp.Plain(text=f"路径：{target_path_prefix}/"),
-            ])
+            # 成功通知始终发送，notify_on_success 控制是否 @用户
+            chain = [Comp.Plain(text=f"文件「{filename}」已同步到网盘 ✓"),
+                     Comp.Plain(text=f"路径：{target_path_prefix}/")]
+            if self.config.notify_on_success:
+                chain.insert(0, Comp.At(qq=event.get_sender_id()))
+            yield event.chain_result(chain)
             logger.info(f"即时同步成功: {filename}")
         else:
-            yield event.chain_result([
-                Comp.At(qq=event.get_sender_id()),
-                Comp.Plain(text=f"文件「{filename}」同步失败: {sync_result.failed_detail or sync_result.failed_stage}"),
-            ])
+            # 失败通知始终发送，notify_on_error 控制是否 @用户
+            chain = [Comp.Plain(text=f"文件「{filename}」同步失败: {sync_result.failed_detail or sync_result.failed_stage}")]
+            if self.config.notify_on_error:
+                chain.insert(0, Comp.At(qq=event.get_sender_id()))
+            yield event.chain_result(chain)
             logger.warning(f"即时同步失败: {filename} - {sync_result.failed_stage}: {sync_result.failed_detail}")
 
         # ── 旧格式温和提醒（合规 + deprecated，在同步成功后附加）──

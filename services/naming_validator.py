@@ -85,6 +85,9 @@ ENGINEERING_PATTERN = re.compile(
 # 需要二级"工程"子目录的分类
 CATEGORIES_WITH_ENGINEERING_SUBDIR = {"成片", "音频"}
 
+# 项目级分类 —— 直接放在项目根目录，不创建分类子目录
+PROJECT_LEVEL_CATEGORIES = {"封面", "文案"}
+
 
 def _has_engineering_suffix(suffixes: List[str]) -> bool:
     """检查后缀列表中是否包含工程标记"""
@@ -211,8 +214,8 @@ class NamingValidator:
 
         新规范目录层级：
         - 项目名称/
-          - 文案/
-          - 封面/
+          - 文案          # 项目级分类，直接放在项目根目录
+          - 封面          # 项目级分类，直接放在项目根目录
           - 成片/
             - 工程/      # 成片-工程或成片v1-工程后缀
           - 素材/
@@ -228,8 +231,11 @@ class NamingValidator:
         if not category:
             return "其他"
 
-        # 一级分类目录
-        segments = [category]
+        # 一级分类目录（项目级分类不创建子目录）
+        if category in PROJECT_LEVEL_CATEGORIES:
+            segments = []
+        else:
+            segments = [category]
 
         # 判断是否属于工程子目录
         is_engineering = result.is_engineering or _has_engineering_suffix(result.suffixes)

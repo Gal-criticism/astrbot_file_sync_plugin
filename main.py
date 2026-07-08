@@ -450,6 +450,7 @@ class FileSyncPlugin(Star):
         logger.info(f"群 {group_id} 共有 {total_files} 个文件")
         sync_time = datetime.now(CN_TZ)
         new_files_count = 0
+        failed_files = []        # 收集本次同步失败的文件名
         skipped_count = {
             "type_filter": 0,      # 文件类型不允许
             "old_file": 0,          # 时间戳早于上次同步
@@ -551,6 +552,7 @@ class FileSyncPlugin(Star):
                 )
                 self.state_manager.add_sync_record(record)
             else:
+                failed_files.append(file_name)
                 if self.config.retry_queue_enabled:
                     self.state_manager.add_to_retry_queue(
                         file_id, file_name, file_size, group_id, target_path,
@@ -597,6 +599,22 @@ class FileSyncPlugin(Star):
             f"name+size:{skipped_count['name_size_synced']} "
             f"命名:{skipped_count.get('naming_invalid', 0)})"
         )
+
+        # ── 定时同步汇总通知（受 notify_on_success / notify_on_error 开关控制）──
+        if new_files_count > 0 and self.config.notify_on_success:
+            msg = (
+                f"[文件同步] 定时同步完成 · 群 {group_name}({group_id})\n"
+                f"扫描 {total_files} 个文件，新增同步 {new_files_count} 个"
+            )
+            await self._send_group_notification(group_id, msg)
+        if failed_files and self.config.notify_on_error:
+            names = "、".join(failed_files[:10])
+            suffix = f"等 {len(failed_files)} 个" if len(failed_files) > 10 else ""
+            msg = (
+                f"[文件同步] 定时同步失败 · 群 {group_name}({group_id})\n"
+                f"失败文件: {names}{suffix}"
+            )
+            await self._send_group_notification(group_id, msg)
 
     async def _sync_single_file(self, group_id: str, target_path: str,
                                  file_id: str, file_name: str, file_size: int):
@@ -708,7 +726,10 @@ class FileSyncPlugin(Star):
     # ===== 重试队列 =====
 
     async def _notify_retry_failed(self, item: dict):
-        """通知用户文件重试同步失败"""
+        """通知用户文件重试同步失败（受 notify_on_error 开关控制）"""
+        if not self.config.notify_on_error:
+            logger.info(f"重试失败通知已关闭: {item['file_name']}")
+            return
         naming_info = ""
         if item.get("naming_category"):
             naming_info = f"\n命名分类: {item['naming_category']}"
@@ -736,6 +757,20 @@ class FileSyncPlugin(Star):
                 )
         except Exception as e:
             logger.error(f"发送重试失败通知失败: {e}")
+
+    async def _send_group_notification(self, group_id: str, message: str):
+        """发送群通知消息"""
+        try:
+            platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
+            if platform:
+                client = platform.get_client()
+                await client.api.call_action(
+                    "send_group_msg",
+                    group_id=int(group_id),
+                    message=message
+                )
+        except Exception as e:
+            logger.error(f"发送群 {group_id} 通知失败: {e}")
 
     async def process_retry_queue(self):
         """处理重试队列"""
