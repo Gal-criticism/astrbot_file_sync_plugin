@@ -240,20 +240,26 @@ class FileEventHandler:
             return
         elif sync_result.success:
             # 成功通知始终发送，notify_on_success 控制是否 @用户
-            logger.info(f"[NOTIFY_DEBUG] notify_on_success={self.config.notify_on_success} (type={type(self.config.notify_on_success).__name__})")
-            chain = [Comp.Plain(text=f"文件「{filename}」已同步到网盘 ✓"),
-                     Comp.Plain(text=f"路径：{target_path_prefix}/")]
             if self.config.notify_on_success:
-                chain.insert(0, Comp.At(qq=event.get_sender_id()))
-            yield event.chain_result(chain)
+                yield event.chain_result([
+                    Comp.At(qq=event.get_sender_id()),
+                    Comp.Plain(text=f"文件「{filename}」已同步到网盘 ✓"),
+                    Comp.Plain(text=f"路径：{target_path_prefix}/"),
+                ])
+            else:
+                await self._plugin._send_group_notification(
+                    group_id, f"文件「{filename}」已同步到网盘 ✓\n路径：{target_path_prefix}/")
             logger.info(f"即时同步成功: {filename}")
         else:
             # 失败通知始终发送，notify_on_error 控制是否 @用户
-            logger.info(f"[NOTIFY_DEBUG] notify_on_error={self.config.notify_on_error} (type={type(self.config.notify_on_error).__name__})")
-            chain = [Comp.Plain(text=f"文件「{filename}」同步失败: {sync_result.failed_detail or sync_result.failed_stage}")]
             if self.config.notify_on_error:
-                chain.insert(0, Comp.At(qq=event.get_sender_id()))
-            yield event.chain_result(chain)
+                yield event.chain_result([
+                    Comp.At(qq=event.get_sender_id()),
+                    Comp.Plain(text=f"文件「{filename}」同步失败: {sync_result.failed_detail or sync_result.failed_stage}"),
+                ])
+            else:
+                await self._plugin._send_group_notification(
+                    group_id, f"文件「{filename}」同步失败: {sync_result.failed_detail or sync_result.failed_stage}")
             logger.warning(f"即时同步失败: {filename} - {sync_result.failed_stage}: {sync_result.failed_detail}")
 
         # ── 旧格式温和提醒（合规 + deprecated，在同步成功后附加）──
@@ -264,11 +270,15 @@ class FileEventHandler:
             except ImportError:
                 return
 
-            chain = [
-                Comp.Plain(text=f"你上传的文件「{filename}」使用了旧格式「分类--名称」"),
-                Comp.Plain(text="⚠️ 该格式仍被接受，但建议迁移到新格式：项目名称-分类v版本号-后缀"),
-            ]
             if self.config.notify_on_success:
-                chain.insert(0, Comp.At(qq=event.get_sender_id()))
-            yield event.chain_result(chain)
+                yield event.chain_result([
+                    Comp.At(qq=event.get_sender_id()),
+                    Comp.Plain(text=f"你上传的文件「{filename}」使用了旧格式「分类--名称」"),
+                    Comp.Plain(text="⚠️ 该格式仍被接受，但建议迁移到新格式：项目名称-分类v版本号-后缀"),
+                ])
+            else:
+                await self._plugin._send_group_notification(
+                    group_id,
+                    f"你上传的文件「{filename}」使用了旧格式「分类--名称」\n"
+                    f"⚠️ 该格式仍被接受，但建议迁移到新格式：项目名称-分类v版本号-后缀")
             logger.info("旧格式温和提醒已发送")

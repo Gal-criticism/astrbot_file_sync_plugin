@@ -214,6 +214,9 @@ def mock_plugin():
     # sync_uploaded_file
     plugin.sync_uploaded_file = AsyncMock()
 
+    # _send_group_notification（用于不开 @ 时的纯文本通知）
+    plugin._send_group_notification = AsyncMock()
+
     return plugin
 
 
@@ -248,7 +251,8 @@ class TestValidNamingSync:
         mock_plugin.naming_validator.validate.return_value = make_result(is_valid=True)
 
         mock_plugin.sync_uploaded_file.return_value = MagicMock(
-            success=True, target_path="/QQ群文件/测试群_123456/成片/文件.mp4"
+            success=True, already_synced=False,
+            target_path="/QQ群文件/测试群_123456/成片/文件.mp4"
         )
 
         event = MockEvent(
@@ -282,7 +286,7 @@ class TestValidNamingSync:
         """合规新格式但同步失败 → 失败消息"""
         mock_plugin.naming_validator.validate.return_value = make_result(is_valid=True)
 
-        mock_sync_result = MagicMock(success=False, target_path="/test")
+        mock_sync_result = MagicMock(success=False, already_synced=False, target_path="/test")
         mock_sync_result.failed_stage = "upload_http_error"
         mock_sync_result.failed_detail = "HTTP 503: Service Unavailable"
         mock_plugin.sync_uploaded_file.return_value = mock_sync_result
@@ -372,7 +376,8 @@ class TestDeprecatedNamingSync:
         )
 
         mock_plugin.sync_uploaded_file.return_value = MagicMock(
-            success=True, target_path="/QQ群文件/测试群_123456/素材/素材--文档.jpg"
+            success=True, already_synced=False,
+            target_path="/QQ群文件/测试群_123456/素材/素材--文档.jpg"
         )
 
         event = MockEvent(
@@ -423,7 +428,7 @@ class TestMissingFileId:
         mock_plugin.naming_validator.validate.return_value = make_result(is_valid=True)
 
         mock_plugin.sync_uploaded_file.return_value = MagicMock(
-            success=True, target_path="/QQ群文件/测试群_123456/项目A/音频/LimeLight Lemonade Jam (Test)-音频-柚子粗剪_516.mp3"
+            success=True, already_synced=False, target_path="/QQ群文件/测试群_123456/项目A/音频/LimeLight Lemonade Jam (Test)-音频-柚子粗剪_516.mp3"
         )
 
         # 模拟真实场景：AstrBot 中 raw_message 是整个 OneBot Event dict，

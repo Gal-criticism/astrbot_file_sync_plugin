@@ -695,6 +695,15 @@ class FileSyncPlugin(Star):
             remote_file_path = f"{target_path}/{file_name}"
             if self.cloud_sync.file_exists(remote_file_path):
                 logger.info(f"[UPLOAD_SYNC] 跳过重复文件(远程已存在): {file_name} -> {remote_file_path}")
+                # 写入 SQLite 记录，避免后续重复触发 PROPFIND 远程检查
+                if self.state_manager:
+                    record = SyncRecord(
+                        file_id=f"remote:{remote_file_path}", file_name=file_name,
+                        file_size=file_size, group_id=group_id, target_path=target_path,
+                        sync_time=datetime.now(CN_TZ),
+                        source='upload', sender_id=sender_id, sender_name=sender_name,
+                    )
+                    self.state_manager.add_sync_record(record)
                 return SyncResult(
                     success=True, file_name=file_name, file_id=file_id,
                     file_size=file_size, group_id=group_id, target_path=target_path,
